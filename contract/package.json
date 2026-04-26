@@ -1,0 +1,18 @@
+{
+  "name": "@midnight-kicks/contract",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "compact": "compact compile src/penalty.compact ./src/managed/penalty",
+    "build": "npm run compact && tsc --project tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@midnight-ntwrk/compact-runtime": "0.15.0",
+    "@midnight-ntwrk/midnight-js-network-id": "4.0.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
