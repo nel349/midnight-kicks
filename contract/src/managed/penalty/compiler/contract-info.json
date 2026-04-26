@@ -8,6 +8,13 @@
       "pure": false,
       "proof": true,
       "arguments": [
+        {
+          "name": "commitDeadlineSecs",
+          "type": {
+            "type-name": "Uint",
+            "maxval": 18446744073709551615
+          }
+        }
       ],
       "result-type": {
         "type-name": "Tuple",
@@ -29,6 +36,30 @@
     },
     {
       "name": "revealBatch",
+      "pure": false,
+      "proof": true,
+      "arguments": [
+      ],
+      "result-type": {
+        "type-name": "Tuple",
+        "types": [
+        ]
+      }
+    },
+    {
+      "name": "claimTimeout",
+      "pure": false,
+      "proof": true,
+      "arguments": [
+      ],
+      "result-type": {
+        "type-name": "Tuple",
+        "types": [
+        ]
+      }
+    },
+    {
+      "name": "cancelMatch",
       "pure": false,
       "proof": true,
       "arguments": [
