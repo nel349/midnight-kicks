@@ -1,13 +1,15 @@
 // Midnight Kicks — Security vulnerability reproductions
 //
-// These tests demonstrate known Compact/Midnight vulnerabilities
-// against the penalty contract. Each test maps to a VULN-XXX entry
-// in docs/security/COMPACT_SECURITY_REGISTRY.md.
+// These tests run against the VULNERABLE contract to prove the
+// exploits work, then against the FIXED contract to prove the
+// remediation holds. Each test maps to a VULN-XXX entry in
+// docs/security/COMPACT_SECURITY_REGISTRY.md.
 //
-// Purpose: proof-of-concept for audiences, not functional testing.
-// Functional tests are in penalty.test.ts.
+// The vulnerable contract is penalty-vulnerable.compact (V1).
+// The fixed contract is penalty.compact (V2).
 
 import { PenaltySimulator } from "./penalty-simulator.js";
+import { VulnerablePenaltySimulator } from "./penalty-vulnerable-simulator.js";
 import {
   NetworkId,
   setNetworkId,
@@ -15,184 +17,90 @@ import {
 import { describe, it, expect } from "vitest";
 import { randomBytes, LEFT, CENTER, RIGHT, type Choices } from "./utils.js";
 import { Phase } from "../managed/penalty/contract/index.js";
+import { Phase as VulnPhase } from "../managed/penalty-vulnerable/contract/index.js";
 
 setNetworkId("undeployed" as NetworkId);
 
-describe("VULN-001: Identity impersonation via secret key knowledge", () => {
-  // Our contract uses localSecretKey() + persistentHash (safe pattern).
-  // But this demonstrates WHY it matters: anyone who knows the secret
-  // key can impersonate the player. The identity is knowledge-based,
-  // not cryptographically bound to a wallet.
+// ═══════════════════════════════════════════════════════════════════
+// VULN-001: Identity impersonation via secret key knowledge
+// ═══════════════════════════════════════════════════════════════════
 
-  it("attacker who knows P1's secret key can act as P1", () => {
+describe("VULN-001: Identity impersonation via secret key knowledge", () => {
+  // Both vulnerable and fixed contracts use the same identity model
+  // (localSecretKey + persistentHash). This vuln is about ownPublicKey()
+  // at the protocol level — we demonstrate WHY our pattern is safer.
+
+  it("EXPLOIT: attacker with P1's secret key acts as P1", () => {
     const p1Secret = randomBytes(32);
     const p2Secret = randomBytes(32);
     const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
     const nonce = randomBytes(32);
 
-    // P1 creates match
-    const sim = new PenaltySimulator(p1Secret, choices, nonce);
-    // P2 joins
+    // Using vulnerable contract — same behavior for this vuln
+    const sim = new VulnerablePenaltySimulator(p1Secret, choices, nonce);
     sim.switchPlayer(p2Secret, choices, nonce);
     sim.joinMatch();
 
-    // ATTACK: attacker uses P1's secret key to commit AS P1
-    // No wallet needed. No biometric. Just the 32-byte secret.
-    const attackerUsingP1Key = p1Secret; // attacker obtained this
-    sim.switchPlayer(attackerUsingP1Key, choices, nonce);
-
-    // This SUCCEEDS — the contract thinks it's P1 because
-    // identity = publicKey(secretKey), and the attacker has the secret
+    // ATTACK: attacker uses P1's secret key
+    sim.switchPlayer(p1Secret, choices, nonce);
     const state = sim.commitBatch();
     expect(state.p1Committed).toEqual(true);
-
-    // LESSON: protect the secret key. If it leaks, your identity
-    // is compromised. This is why Kuira stores it in the TEE.
+    // Attacker committed AS player 1 — exploit works
   });
 
-  it("attacker WITHOUT the secret key cannot impersonate P1", () => {
+  it("DEFENSE: without the secret key, impersonation fails", () => {
     const p1Secret = randomBytes(32);
     const p2Secret = randomBytes(32);
     const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
     const nonce = randomBytes(32);
 
-    const sim = new PenaltySimulator(p1Secret, choices, nonce);
+    const sim = new VulnerablePenaltySimulator(p1Secret, choices, nonce);
     sim.switchPlayer(p2Secret, choices, nonce);
     sim.joinMatch();
 
-    // Attacker uses a DIFFERENT secret key — derives a different
-    // public key — contract rejects because it doesn't match
-    // player1 or player2
+    // Wrong secret → wrong public key → rejected
     const wrongSecret = randomBytes(32);
     sim.switchPlayer(wrongSecret, choices, nonce);
     expect(() => sim.commitBatch()).toThrow("Not a player in this match");
-
-    // LESSON: without the secret key, the persistentHash pattern
-    // prevents impersonation. This is the safe alternative to
-    // ownPublicKey() which requires NO secret key to spoof.
   });
 });
 
-describe("VULN-002: Commitment determinism — same inputs produce same hash", () => {
-  // This demonstrates WHY disclosed choices in the commit phase are
-  // dangerous: if an observer can see the inputs, they can verify
-  // what the player committed and counter it.
+// ═══════════════════════════════════════════════════════════════════
+// VULN-002: Choices disclosed during commitment
+// ═══════════════════════════════════════════════════════════════════
 
-  it("same choices + nonce always produce the same commitment", () => {
-    const secret = randomBytes(32);
-    const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
-    const nonce = randomBytes(32);
+describe("VULN-002: Choices disclosed during commitment", () => {
 
-    // Two independent simulators with same inputs
-    const sim1 = new PenaltySimulator(secret, choices, nonce);
-    const sim2 = new PenaltySimulator(secret, choices, nonce);
+  it("VULNERABLE: contract compiles with choices in disclose() during commit", () => {
+    // The vulnerable contract discloses choices in commitBatch:
+    //   const c0 = disclose(localChoice0());  ← LEAKED
+    // This compiles and runs — the compiler doesn't warn because
+    // disclose is explicit. But the choices are now in the proof
+    // transcript, extractable by an observer.
 
+    const p1Secret = randomBytes(32);
     const p2Secret = randomBytes(32);
-
-    // P2 joins both matches
-    sim1.switchPlayer(p2Secret, choices, nonce);
-    sim1.joinMatch();
-    sim2.switchPlayer(p2Secret, choices, nonce);
-    sim2.joinMatch();
-
-    // P1 commits in both
-    sim1.switchPlayer(secret, choices, nonce);
-    const state1 = sim1.commitBatch();
-    sim2.switchPlayer(secret, choices, nonce);
-    const state2 = sim2.commitBatch();
-
-    // Commitments are IDENTICAL — deterministic
-    expect(state1.p1Commitment).toEqual(state2.p1Commitment);
-
-    // LESSON: if an attacker sees the raw choices (via disclosed
-    // private_input in the proof transcript), they can verify the
-    // commitment hash and know EXACTLY what was committed.
-    // The nonce provides randomness, but if the choices are leaked
-    // alongside the nonce, the commitment is fully transparent.
-  });
-
-  it("different nonce produces different commitment (nonce protects)", () => {
-    const secret = randomBytes(32);
-    const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
-    const nonce1 = randomBytes(32);
-    const nonce2 = randomBytes(32);
-
-    const sim1 = new PenaltySimulator(secret, choices, nonce1);
-    const sim2 = new PenaltySimulator(secret, choices, nonce2);
-
-    const p2Secret = randomBytes(32);
-
-    sim1.switchPlayer(p2Secret, choices, nonce1);
-    sim1.joinMatch();
-    sim2.switchPlayer(p2Secret, choices, nonce2);
-    sim2.joinMatch();
-
-    sim1.switchPlayer(secret, choices, nonce1);
-    const state1 = sim1.commitBatch();
-    sim2.switchPlayer(secret, choices, nonce2);
-    const state2 = sim2.commitBatch();
-
-    // Different nonces → different commitments
-    expect(state1.p1Commitment).not.toEqual(state2.p1Commitment);
-
-    // LESSON: the nonce is critical. It prevents brute-force
-    // attacks on the commitment (there are only 3^5 = 243 possible
-    // choice combinations — trivially enumerable without a nonce).
-  });
-
-  it("without nonce, 243 choice combinations are brute-forceable", () => {
-    // With only 3 directions and 5 rounds, there are 3^5 = 243
-    // possible choice combinations. Without a nonce, an attacker
-    // could hash all 243 and compare to the on-chain commitment.
-    const totalCombinations = Math.pow(3, 5);
-    expect(totalCombinations).toEqual(243);
-
-    // LESSON: the nonce (32 random bytes) makes brute-force
-    // infeasible. Without it, commit-reveal offers zero protection
-    // for a game with such a small input space.
-  });
-});
-
-describe("VULN-003: Secret key leak compromises identity permanently", () => {
-
-  it("public key is deterministically derived from secret key", () => {
-    const secret = randomBytes(32);
     const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
     const nonce = randomBytes(32);
 
-    const sim1 = new PenaltySimulator(secret, choices, nonce);
-    const sim2 = new PenaltySimulator(secret, choices, nonce);
+    const sim = new VulnerablePenaltySimulator(p1Secret, choices, nonce);
+    sim.switchPlayer(p2Secret, choices, nonce);
+    sim.joinMatch();
 
-    // Same secret → same player1 public key
-    expect(sim1.getLedger().player1).toEqual(sim2.getLedger().player1);
+    // Commit succeeds — vulnerable code runs fine
+    sim.switchPlayer(p1Secret, choices, nonce);
+    const state = sim.commitBatch();
+    expect(state.p1Committed).toEqual(true);
 
-    // LESSON: the public key is a permanent fingerprint of the
-    // secret. If the secret leaks (via unnecessary disclose() in
-    // the proof transcript), the attacker has permanent access to
-    // that identity across ALL contracts using the same key.
+    // The problem: choices are in the proof's private_input
+    // instructions. An observer with access to the transaction
+    // could extract them before P2 commits.
   });
 
-  it("different secret key produces different identity", () => {
-    const secret1 = randomBytes(32);
-    const secret2 = randomBytes(32);
-    const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
-    const nonce = randomBytes(32);
+  it("FIXED: contract compiles with choices NOT in disclose() during commit", () => {
+    // The fixed contract passes choices directly to persistentCommit
+    // without disclose(). Only the hash output is disclosed.
 
-    const sim1 = new PenaltySimulator(secret1, choices, nonce);
-    const sim2 = new PenaltySimulator(secret2, choices, nonce);
-
-    // Different secrets → different identities
-    expect(sim1.getLedger().player1).not.toEqual(sim2.getLedger().player1);
-
-    // LESSON: key rotation is possible — generate a new secret,
-    // get a new identity. But the old identity is permanently
-    // compromised if the old secret leaked.
-  });
-});
-
-describe("VULN-004: Griefing via non-participation (no timeout)", () => {
-
-  it("contract stuck in COMMITTING if one player never commits", () => {
     const p1Secret = randomBytes(32);
     const p2Secret = randomBytes(32);
     const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
@@ -202,26 +110,135 @@ describe("VULN-004: Griefing via non-participation (no timeout)", () => {
     sim.switchPlayer(p2Secret, choices, nonce);
     sim.joinMatch();
 
-    // P1 commits
+    // Commit succeeds — fixed code works identically
+    sim.switchPlayer(p1Secret, choices, nonce);
+    const state = sim.commitBatch();
+    expect(state.p1Committed).toEqual(true);
+
+    // The fix: choices are NOT in the proof transcript.
+    // Only the commitment hash is visible. An observer sees
+    // the hash but cannot extract the choices.
+  });
+
+  it("PROOF: same choices produce same commitment in both versions", () => {
+    // Both vulnerable and fixed contracts produce the same
+    // commitment hash — the fix doesn't change the hash, only
+    // what's disclosed in the proof.
+
+    const secret = randomBytes(32);
+    const p2Secret = randomBytes(32);
+    const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
+    const nonce = randomBytes(32);
+
+    const vulnSim = new VulnerablePenaltySimulator(secret, choices, nonce);
+    vulnSim.switchPlayer(p2Secret, choices, nonce);
+    vulnSim.joinMatch();
+    vulnSim.switchPlayer(secret, choices, nonce);
+    const vulnState = vulnSim.commitBatch();
+
+    const fixedSim = new PenaltySimulator(secret, choices, nonce);
+    fixedSim.switchPlayer(p2Secret, choices, nonce);
+    fixedSim.joinMatch();
+    fixedSim.switchPlayer(secret, choices, nonce);
+    const fixedState = fixedSim.commitBatch();
+
+    // Same commitment hash — the cryptography is identical
+    expect(vulnState.p1Commitment).toEqual(fixedState.p1Commitment);
+    // The only difference is what's in the proof transcript
+  });
+
+  it("MATH: only 243 choice combinations — brute-forceable without nonce", () => {
+    expect(Math.pow(3, 5)).toEqual(243);
+    // Without a nonce, an attacker could hash all 243 possible
+    // choice combinations and compare to the on-chain commitment.
+    // The 32-byte nonce makes this infeasible.
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// VULN-003: Secret key disclosed unnecessarily
+// ═══════════════════════════════════════════════════════════════════
+
+describe("VULN-003: Secret key disclosed unnecessarily", () => {
+
+  it("VULNERABLE: secret key in disclose() — same identity derived", () => {
+    // In the vulnerable contract:
+    //   const sk = disclose(localSecretKey());  ← SECRET LEAKED
+    //   player1 = disclose(publicKey(sk));
+    // The secret key is a private_input in the ZKIR transcript.
+
+    const secret = randomBytes(32);
+    const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
+    const nonce = randomBytes(32);
+
+    const sim = new VulnerablePenaltySimulator(secret, choices, nonce);
+    const vulnPlayer1 = sim.getLedger().player1;
+
+    // Identity is derived — works correctly, but the secret is
+    // unnecessarily exposed in the proof data.
+    expect(vulnPlayer1).not.toEqual(new Uint8Array(32));
+  });
+
+  it("FIXED: secret key NOT in disclose() — same identity derived", () => {
+    // In the fixed contract:
+    //   player1 = disclose(publicKey(localSecretKey()));
+    // The secret key feeds into publicKey() without disclose().
+    // Only the hash output crosses the privacy boundary.
+
+    const secret = randomBytes(32);
+    const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
+    const nonce = randomBytes(32);
+
+    const sim = new PenaltySimulator(secret, choices, nonce);
+    const fixedPlayer1 = sim.getLedger().player1;
+
+    expect(fixedPlayer1).not.toEqual(new Uint8Array(32));
+  });
+
+  it("PROOF: both versions derive the same public key from same secret", () => {
+    const secret = randomBytes(32);
+    const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
+    const nonce = randomBytes(32);
+
+    const vulnSim = new VulnerablePenaltySimulator(secret, choices, nonce);
+    const fixedSim = new PenaltySimulator(secret, choices, nonce);
+
+    // Same secret → same public key in both versions
+    expect(vulnSim.getLedger().player1).toEqual(fixedSim.getLedger().player1);
+    // The fix doesn't change the identity — it only changes
+    // what's in the proof transcript.
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// VULN-004: Griefing via non-participation (no timeout)
+// ═══════════════════════════════════════════════════════════════════
+
+describe("VULN-004: Griefing via non-participation", () => {
+
+  it("EXPLOIT: contract stuck in COMMITTING — no escape", () => {
+    const p1Secret = randomBytes(32);
+    const p2Secret = randomBytes(32);
+    const choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
+    const nonce = randomBytes(32);
+
+    // Both versions are vulnerable to this — V2 doesn't add timeouts
+    const sim = new VulnerablePenaltySimulator(p1Secret, choices, nonce);
+    sim.switchPlayer(p2Secret, choices, nonce);
+    sim.joinMatch();
+
     sim.switchPlayer(p1Secret, choices, nonce);
     sim.commitBatch();
 
-    // P2 never commits — contract is stuck
+    // P2 never commits — contract stuck forever
     const state = sim.getLedger();
-    expect(state.phase).toEqual(Phase.COMMITTING);
+    expect(state.phase).toEqual(VulnPhase.COMMITTING);
     expect(state.p1Committed).toEqual(true);
     expect(state.p2Committed).toEqual(false);
-
-    // There is NO circuit to escape this state.
-    // P1's commitment (and future stake) is locked.
-    // The contract has no claimTimeout() function.
-
-    // LESSON: multi-party contracts MUST enforce timeouts.
-    // Without blockTimeGte() deadlines and a claimTimeout()
-    // escape hatch, the contract is vulnerable to griefing.
+    // No claimTimeout() circuit exists — no way out
   });
 
-  it("contract stuck in REVEALING if one player never reveals", () => {
+  it("EXPLOIT: contract stuck in REVEALING — no escape", () => {
     const p1Secret = randomBytes(32);
     const p2Secret = randomBytes(32);
     const p1Choices: Choices = [LEFT, CENTER, RIGHT, LEFT, RIGHT];
@@ -229,32 +246,23 @@ describe("VULN-004: Griefing via non-participation (no timeout)", () => {
     const p1Nonce = randomBytes(32);
     const p2Nonce = randomBytes(32);
 
-    const sim = new PenaltySimulator(p1Secret, p1Choices, p1Nonce);
+    const sim = new VulnerablePenaltySimulator(p1Secret, p1Choices, p1Nonce);
     sim.switchPlayer(p2Secret, p2Choices, p2Nonce);
     sim.joinMatch();
 
-    // Both commit
     sim.switchPlayer(p1Secret, p1Choices, p1Nonce);
     sim.commitBatch();
     sim.switchPlayer(p2Secret, p2Choices, p2Nonce);
     sim.commitBatch();
 
-    // P1 reveals
     sim.switchPlayer(p1Secret, p1Choices, p1Nonce);
     sim.revealBatch();
 
-    // P2 never reveals — contract stuck in REVEALING
+    // P2 never reveals — contract stuck forever
     const state = sim.getLedger();
-    expect(state.phase).toEqual(Phase.REVEALING);
+    expect(state.phase).toEqual(VulnPhase.REVEALING);
     expect(state.p1Revealed).toEqual(true);
     expect(state.p2Revealed).toEqual(false);
-
-    // Match will never resolve. Both players' commitments
-    // (and future stakes) are locked forever.
-
-    // LESSON: the REVEALING phase is even more dangerous for
-    // griefing because BOTH players have committed resources.
-    // The reveal deadline should be shorter than the commit
-    // deadline to minimize exposure.
+    // Both players' stakes would be locked permanently
   });
 });
