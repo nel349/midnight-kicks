@@ -33,7 +33,7 @@ class MatchManager(
     /**
      * Initialize the SDK (derive keys, set up wallet).
      */
-    fun initSdk(onProgress: (String) -> Unit) {
+    suspend fun initSdk(onProgress: (String) -> Unit) {
         onProgress("Initializing SDK...")
         installProvingKeys()
 
@@ -43,6 +43,14 @@ class MatchManager(
             .build()
         sdk = midnightSdk
         Log.i(TAG, "SDK initialized, wallet address: ${midnightSdk.walletAddress}")
+
+        // Download wallet proving keys if needed (dust/zswap provers)
+        if (!midnightSdk.provingKeyManager.hasWalletKeys()) {
+            onProgress("Downloading wallet proving keys...")
+            midnightSdk.provingKeyManager.downloadWalletKeys { progress ->
+                onProgress("Downloading keys: ${(progress * 100).toInt()}%")
+            }
+        }
     }
 
     /**
