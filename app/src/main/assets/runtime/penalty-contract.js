@@ -1,7 +1,7 @@
-import * as __compactRuntime from '@midnight-ntwrk/compact-runtime';
+// compact-runtime loaded as global __compactRuntime
 __compactRuntime.checkRuntimeVersion('0.15.0');
 
-export var Phase;
+var Phase;
 (function (Phase) {
   Phase[Phase['WAITING'] = 0] = 'WAITING';
   Phase[Phase['COMMITTING'] = 1] = 'COMMITTING';
@@ -81,7 +81,7 @@ class _ContractAddress_0 {
 
 const _descriptor_10 = new _ContractAddress_0();
 
-export class Contract {
+class Contract {
   witnesses;
   constructor(...args_0) {
     if (args_0.length !== 1) {
@@ -3586,7 +3586,7 @@ export class Contract {
     return true;
   }
 }
-export function ledger(stateOrChargedState) {
+function ledger(stateOrChargedState) {
   const state = stateOrChargedState instanceof __compactRuntime.StateValue ? stateOrChargedState : stateOrChargedState.state;
   const chargedState = stateOrChargedState instanceof __compactRuntime.StateValue ? new __compactRuntime.ChargedState(stateOrChargedState) : stateOrChargedState;
   const context = {
@@ -4039,7 +4039,7 @@ const _dummyContract = new Contract({
   localChoice4: (...args) => undefined,
   localNonce: (...args) => undefined
 });
-export const pureCircuits = {};
-export const contractReferenceLocations =
+const pureCircuits = {};
+const contractReferenceLocations =
   { tag: 'publicLedgerArray', indices: { } };
 //# sourceMappingURL=index.js.map

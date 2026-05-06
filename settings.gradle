@@ -1,0 +1,23 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        google()
+        mavenCentral()
+        // Local AARs from Kuira SDK build
+        flatDir {
+            dirs "${rootDir}/libs"
+        }
+    }
+}
+
+rootProject.name = "MidnightKicks"
+include ':app'
+include ':unityLibrary'
