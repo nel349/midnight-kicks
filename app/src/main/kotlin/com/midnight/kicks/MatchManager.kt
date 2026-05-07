@@ -75,11 +75,15 @@ class MatchManager(
         val address = deployMatch(p1SecretKey, onProgress)
         Log.i(TAG, "Match at: $address")
 
-        // Force dust resync — deploy consumed a UTXO, need fresh state for next tx
+        // Wait for indexer to catch up with both the contract AND the dust spend
+        onProgress("Waiting for indexer (contract + dust)...")
+        delay(5000) // Give indexer time to process the deploy block's dust events
+
+        // Force dust resync — deploy consumed a UTXO, need fresh state
         onProgress("Resyncing dust...")
         midnightSdk.wallet.forceResyncDust()
 
-        // Wait for indexer to catch up with the deployed contract
+        // Wait for indexer to find the contract
         onProgress("Waiting for indexer...")
         var joined = false
         for (attempt in 1..10) {
@@ -101,23 +105,35 @@ class MatchManager(
         Log.i(TAG, "AI joined")
 
         // Step 3: P1 commits
+        onProgress("Resyncing dust...")
+        delay(3000)
+        midnightSdk.wallet.forceResyncDust()
         onProgress("Committing your choices...")
         val p1Nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
         commitChoices(p1SecretKey, address, playerChoices, p1Nonce, onProgress)
         Log.i(TAG, "P1 committed")
 
         // Step 4: P2 (AI) commits
+        onProgress("Resyncing dust...")
+        delay(3000)
+        midnightSdk.wallet.forceResyncDust()
         onProgress("AI committing...")
         val p2Nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
         commitChoices(p2SecretKey, address, aiChoices, p2Nonce, onProgress)
         Log.i(TAG, "P2 committed")
 
         // Step 5: P1 reveals
+        onProgress("Resyncing dust...")
+        delay(3000)
+        midnightSdk.wallet.forceResyncDust()
         onProgress("Revealing your choices...")
         revealChoices(p1SecretKey, address, playerChoices, p1Nonce, onProgress)
         Log.i(TAG, "P1 revealed")
 
         // Step 6: P2 (AI) reveals — contract auto-resolves
+        onProgress("Resyncing dust...")
+        delay(3000)
+        midnightSdk.wallet.forceResyncDust()
         onProgress("AI revealing...")
         revealChoices(p2SecretKey, address, aiChoices, p2Nonce, onProgress)
         Log.i(TAG, "P2 revealed — match resolved!")
@@ -214,11 +230,11 @@ class MatchManager(
             if (address != null) this.address = address
 
             witness("localSecretKey") { WitnessResult(null, secretKey.copyOf()) }
-            witness("localChoice0") { WitnessResult(null, choices?.let { byteArrayOf(it[0].toByte()) } ?: dummyChoice) }
-            witness("localChoice1") { WitnessResult(null, choices?.let { byteArrayOf(it[1].toByte()) } ?: dummyChoice) }
-            witness("localChoice2") { WitnessResult(null, choices?.let { byteArrayOf(it[2].toByte()) } ?: dummyChoice) }
-            witness("localChoice3") { WitnessResult(null, choices?.let { byteArrayOf(it[3].toByte()) } ?: dummyChoice) }
-            witness("localChoice4") { WitnessResult(null, choices?.let { byteArrayOf(it[4].toByte()) } ?: dummyChoice) }
+            witness("localChoice0") { WitnessResult(null, byteArrayOf((choices?.get(0) ?: 0).toByte())) }
+            witness("localChoice1") { WitnessResult(null, byteArrayOf((choices?.get(1) ?: 0).toByte())) }
+            witness("localChoice2") { WitnessResult(null, byteArrayOf((choices?.get(2) ?: 0).toByte())) }
+            witness("localChoice3") { WitnessResult(null, byteArrayOf((choices?.get(3) ?: 0).toByte())) }
+            witness("localChoice4") { WitnessResult(null, byteArrayOf((choices?.get(4) ?: 0).toByte())) }
             witness("localNonce") { WitnessResult(null, nonce ?: dummyNonce) }
 
             initialPrivateState = mapOf("secretKey" to secretKey.copyOf())
