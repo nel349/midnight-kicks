@@ -90,7 +90,10 @@ class MatchManager(
             delay(2000)
             try {
                 onProgress("AI joining match (attempt $attempt)...")
-                callCircuit(p2SecretKey, address, "joinMatch", arrayOf(COMMIT_DEADLINE_SECS), onProgress)
+                val deadlineAbsolute = java.math.BigInteger.valueOf(
+                    System.currentTimeMillis() / 1000 + COMMIT_DEADLINE_DURATION_SECS
+                )
+                callCircuit(p2SecretKey, address, "joinMatch", arrayOf(deadlineAbsolute), onProgress)
                 joined = true
                 break
             } catch (e: Exception) {
@@ -104,9 +107,9 @@ class MatchManager(
         if (!joined) throw IllegalStateException("Failed to join match after 10 attempts")
         Log.i(TAG, "AI joined")
 
-        // Step 3: P1 commits
-        onProgress("Resyncing dust...")
-        delay(3000)
+        // Step 3: P1 commits — delay for indexer to process joinMatch state
+        onProgress("Waiting for state sync...")
+        delay(8000)
         midnightSdk.wallet.forceResyncDust()
         onProgress("Committing your choices...")
         val p1Nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
@@ -189,6 +192,7 @@ class MatchManager(
         nonce: ByteArray,
         onProgress: (String) -> Unit,
     ) {
+        Log.i(TAG, "WITNESS_DUMP commit sk=${secretKey.joinToString("") { "%02x".format(it) }} choices=${choices.toList()} nonce=${nonce.joinToString("") { "%02x".format(it) }}")
         val midnightSdk = requireNotNull(sdk)
         val contract = createContractHandle(midnightSdk, secretKey, address, choices, nonce)
         contract.call("commitBatch") { stage ->
@@ -203,6 +207,7 @@ class MatchManager(
         nonce: ByteArray,
         onProgress: (String) -> Unit,
     ) {
+        Log.i(TAG, "WITNESS_DUMP reveal sk=${secretKey.joinToString("") { "%02x".format(it) }} choices=${choices.toList()} nonce=${nonce.joinToString("") { "%02x".format(it) }}")
         val midnightSdk = requireNotNull(sdk)
         val contract = createContractHandle(midnightSdk, secretKey, address, choices, nonce)
         contract.call("revealBatch") { stage ->
@@ -229,13 +234,41 @@ class MatchManager(
             contractJs = context.assets.open("runtime/penalty-contract.js")
             if (address != null) this.address = address
 
-            witness("localSecretKey") { WitnessResult(null, secretKey.copyOf()) }
-            witness("localChoice0") { WitnessResult(null, byteArrayOf((choices?.get(0) ?: 0).toByte())) }
-            witness("localChoice1") { WitnessResult(null, byteArrayOf((choices?.get(1) ?: 0).toByte())) }
-            witness("localChoice2") { WitnessResult(null, byteArrayOf((choices?.get(2) ?: 0).toByte())) }
-            witness("localChoice3") { WitnessResult(null, byteArrayOf((choices?.get(3) ?: 0).toByte())) }
-            witness("localChoice4") { WitnessResult(null, byteArrayOf((choices?.get(4) ?: 0).toByte())) }
-            witness("localNonce") { WitnessResult(null, nonce ?: dummyNonce) }
+            witness("localSecretKey") {
+                val v = secretKey.copyOf()
+                Log.i(TAG, "WITNESS_CALL localSecretKey -> ${v.joinToString("") { "%02x".format(it) }}")
+                WitnessResult(null, v)
+            }
+            witness("localChoice0") {
+                val v = byteArrayOf((choices?.get(0) ?: 0).toByte())
+                Log.i(TAG, "WITNESS_CALL localChoice0 -> ${v.joinToString("") { "%02x".format(it) }}")
+                WitnessResult(null, v)
+            }
+            witness("localChoice1") {
+                val v = byteArrayOf((choices?.get(1) ?: 0).toByte())
+                Log.i(TAG, "WITNESS_CALL localChoice1 -> ${v.joinToString("") { "%02x".format(it) }}")
+                WitnessResult(null, v)
+            }
+            witness("localChoice2") {
+                val v = byteArrayOf((choices?.get(2) ?: 0).toByte())
+                Log.i(TAG, "WITNESS_CALL localChoice2 -> ${v.joinToString("") { "%02x".format(it) }}")
+                WitnessResult(null, v)
+            }
+            witness("localChoice3") {
+                val v = byteArrayOf((choices?.get(3) ?: 0).toByte())
+                Log.i(TAG, "WITNESS_CALL localChoice3 -> ${v.joinToString("") { "%02x".format(it) }}")
+                WitnessResult(null, v)
+            }
+            witness("localChoice4") {
+                val v = byteArrayOf((choices?.get(4) ?: 0).toByte())
+                Log.i(TAG, "WITNESS_CALL localChoice4 -> ${v.joinToString("") { "%02x".format(it) }}")
+                WitnessResult(null, v)
+            }
+            witness("localNonce") {
+                val v = (nonce ?: dummyNonce).copyOf()
+                Log.i(TAG, "WITNESS_CALL localNonce -> ${v.joinToString("") { "%02x".format(it) }}")
+                WitnessResult(null, v)
+            }
 
             initialPrivateState = mapOf("secretKey" to secretKey.copyOf())
             coinPublicKey = midnightSdk.coinPublicKey
@@ -317,7 +350,7 @@ class MatchManager(
 
     companion object {
         private const val TAG = "MatchManager"
-        private val COMMIT_DEADLINE_SECS = java.math.BigInteger.valueOf(300)
+        private const val COMMIT_DEADLINE_DURATION_SECS = 300L
     }
 }
 
