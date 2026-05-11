@@ -7,13 +7,56 @@ public class ShotManager : MonoBehaviour
 {
     public BallKicker ballKicker;
     public Keeper keeper;
-    
+
     public Vector3 shooterStartPos = new Vector3(-1.2f, 0.5f, -3.2f);
     public Vector3 shooterKickPos = new Vector3(-0.3f, 0.5f, -0.2f);
-    
+
+    // ── Result keys (must match JSON payload from Kotlin's MatchManager) ──
+    private const string ResultGoal = "goal";
+
+    // ── Scene lookup ──
+    private const string ShooterObjectName = "Shooter";
+
+    // ── Animator state names. Must match ShooterController / KeeperController ──
+    private const string AnimIdle = "Idle";
+    private const string AnimRun = "Run";
+    private const string AnimKick = "Kick";
+
+    // ── Choreography timings (seconds) ──
+    private const float IntroDuration = 2.2f;
+    private const float PreRunHold = 1.2f;
+    private const float RunDuration = 0.9f;
+    private const float KickWindupDuration = 0.75f;
+    private const float KeeperDiveDelay = 0.05f;
+    private const float KeeperDiveDuration = 0.8f;
+    private const float BallFlightDuration = 1.2f;
+    private const float ReactionDuration = 1.8f;
+    private const float ScoreHoldBetweenRounds = 1f;
+    private const float FinalResultHold = 4f;
+
+    // ── Reaction motion ──
+    private const float CelebrationHopHeight = 0.35f;
+    private const float CelebrationHops = 2f;
+    private const float DefeatLeanDegrees = 20f;
+
+    // ── Camera framing ──
+    private static readonly Vector3 GoalLookTarget = new Vector3(0, 1.4f, 11f);
+    private static readonly Vector3 IntroStartCam = new Vector3(-6f, 2.5f, -1f);
+    private static readonly Vector3 PlayCamPos = new Vector3(-4f, 1.7f, -3f);
+
+    // ── UI style font sizes ──
+    private const int ScoreFontSize = 32;
+    private const int ResultFontSize = 72;
+    private const int FeedbackFontSize = 64;
+
+    // ── Runtime state ──
     private GameObject shooter;
     private Animator shooterAnim;
     private Quaternion shooterInitialRotation;
+    private Camera mainCamera;
+    private GUIStyle scoreStyle;
+    private GUIStyle resultStyle;
+    private GUIStyle feedbackStyle;
     private bool isPlaying = false;
     private bool showResult = false;
     private string resultMessage = "";
@@ -21,17 +64,13 @@ public class ShotManager : MonoBehaviour
     private string currentScore = "P1: 0 - P2: 0";
     private Color feedbackColor = Color.white;
 
-    private static readonly Vector3 GoalLookTarget = new Vector3(0, 1.4f, 11f);
-    private static readonly Vector3 IntroStartCam = new Vector3(-6f, 2.5f, -1f);
-    private static readonly Vector3 PlayCamPos = new Vector3(-4f, 1.7f, -3f);
-
     void Update()
     {
         // Debug: press T to test a single goal replay in Editor
         if (Keyboard.current != null && Keyboard.current.tKey.wasPressedThisFrame && !isPlaying)
         {
             List<RoundData> testRounds = new List<RoundData> {
-                new RoundData { round = 1, shooter = "P1", shootDir = 1, keepDir = 0, result = "goal" }
+                new RoundData { round = 1, shooter = "P1", shootDir = 1, keepDir = 0, result = ResultGoal }
             };
             StartCoroutine(PlayReplay(testRounds, null));
         }
@@ -41,7 +80,7 @@ public class ShotManager : MonoBehaviour
     {
         if (shooter == null)
         {
-            shooter = GameObject.Find("Shooter");
+            shooter = GameObject.Find(ShooterObjectName);
             if (shooter != null)
             {
                 shooterAnim = shooter.GetComponent<Animator>();
@@ -51,11 +90,13 @@ public class ShotManager : MonoBehaviour
 
         if (ballKicker == null) ballKicker = FindAnyObjectByType<BallKicker>();
         if (keeper == null) keeper = FindAnyObjectByType<Keeper>();
+        if (mainCamera == null) mainCamera = Camera.main;
 
         Debug.Log($"[ShotManager] CacheShooter: shooter={(shooter != null)} " +
                   $"shooterAnim={(shooterAnim != null)} " +
                   $"ballKicker={(ballKicker != null)} " +
-                  $"keeper={(keeper != null)}");
+                  $"keeper={(keeper != null)} " +
+                  $"mainCamera={(mainCamera != null)}");
     }
 
     public IEnumerator PlayReplay(List<RoundData> rounds, System.Action onComplete)
@@ -80,14 +121,14 @@ public class ShotManager : MonoBehaviour
                       $"shootDir={round.shootDir} keepDir={round.keepDir} result={round.result}");
             yield return StartCoroutine(PlayRound(round));
 
-            if (round.result == "goal")
+            if (round.result == ResultGoal)
             {
                 if (round.shooter == "P1") p1Score++;
                 else p2Score++;
             }
 
             currentScore = $"P1: {p1Score} - P2: {p2Score}";
-            yield return new WaitForSeconds(1f);
+            yield return new WaitForSeconds(ScoreHoldBetweenRounds);
         }
 
         if (p1Score > p2Score) resultMessage = "PLAYER 1 WINS!";
@@ -95,7 +136,7 @@ public class ShotManager : MonoBehaviour
         else resultMessage = "DRAW!";
 
         showResult = true;
-        yield return new WaitForSeconds(4f);
+        yield return new WaitForSeconds(FinalResultHold);
         showResult = false;
 
         isPlaying = false;
@@ -107,20 +148,27 @@ public class ShotManager : MonoBehaviour
     private IEnumerator PlayIntro()
     {
         currentFeedback = "GET READY...";
-        float duration = 2.2f;
         float elapsed = 0f;
 
-        while (elapsed < duration)
+        // `Camera.main` does a tag-search internally; cache the transform.
+        Transform cam = mainCamera != null ? mainCamera.transform : null;
+        if (cam == null)
+        {
+            currentFeedback = "";
+            yield break;
+        }
+
+        while (elapsed < IntroDuration)
         {
             elapsed += Time.deltaTime;
-            float t = Mathf.SmoothStep(0f, 1f, elapsed / duration);
-            Camera.main.transform.position = Vector3.Lerp(IntroStartCam, PlayCamPos, t);
-            Camera.main.transform.LookAt(GoalLookTarget);
+            float t = Mathf.SmoothStep(0f, 1f, elapsed / IntroDuration);
+            cam.position = Vector3.Lerp(IntroStartCam, PlayCamPos, t);
+            cam.LookAt(GoalLookTarget);
             yield return null;
         }
 
-        Camera.main.transform.position = PlayCamPos;
-        Camera.main.transform.LookAt(GoalLookTarget);
+        cam.position = PlayCamPos;
+        cam.LookAt(GoalLookTarget);
         currentFeedback = "";
     }
 
@@ -132,20 +180,19 @@ public class ShotManager : MonoBehaviour
         {
             shooter.transform.position = shooterStartPos;
             shooter.transform.rotation = shooterInitialRotation;
-            if (shooterAnim != null) shooterAnim.Play("Idle");
+            if (shooterAnim != null) shooterAnim.Play(AnimIdle);
         }
 
         currentFeedback = "";
-        yield return new WaitForSeconds(1.2f);
+        yield return new WaitForSeconds(PreRunHold);
 
-        if (shooterAnim != null) shooterAnim.Play("Run");
+        if (shooterAnim != null) shooterAnim.Play(AnimRun);
 
-        float runTime = 0.9f;
         float elapsed = 0f;
-        while (elapsed < runTime)
+        while (elapsed < RunDuration)
         {
             elapsed += Time.deltaTime;
-            float t = elapsed / runTime;
+            float t = elapsed / RunDuration;
             if (shooter != null)
                 shooter.transform.position = Vector3.Lerp(shooterStartPos, shooterKickPos, t);
             yield return null;
@@ -153,17 +200,17 @@ public class ShotManager : MonoBehaviour
         if (shooter != null)
             shooter.transform.position = shooterKickPos;
 
-        if (shooterAnim != null) shooterAnim.Play("Kick");
-        yield return new WaitForSeconds(0.75f);
+        if (shooterAnim != null) shooterAnim.Play(AnimKick);
+        yield return new WaitForSeconds(KickWindupDuration);
 
         if (ballKicker != null) ballKicker.KickTo(round.shootDir);
-        yield return new WaitForSeconds(0.05f);
-        if (keeper != null) keeper.Dive(round.keepDir, 0.8f);
+        yield return new WaitForSeconds(KeeperDiveDelay);
+        if (keeper != null) keeper.Dive(round.keepDir, KeeperDiveDuration);
 
-        yield return new WaitForSeconds(1.2f);
+        yield return new WaitForSeconds(BallFlightDuration);
 
         currentFeedback = round.result.ToUpper() + "!";
-        feedbackColor = round.result == "goal" ? Color.green : Color.yellow;
+        feedbackColor = round.result == ResultGoal ? Color.green : Color.yellow;
 
         // Post-kick reactions. With only Idle / Run / Kick on the shooter and
         // Idle / Dive* / FallenIdle on the keeper, we layer procedural motion
@@ -178,42 +225,34 @@ public class ShotManager : MonoBehaviour
     /// </summary>
     private IEnumerator PlayReaction(string result)
     {
-        const float duration = 1.8f;
         float elapsed = 0f;
 
         Vector3 shooterBase = shooter != null ? shooter.transform.position : Vector3.zero;
         Quaternion shooterBaseRot = shooter != null ? shooter.transform.rotation : Quaternion.identity;
-        bool isGoal = result == "goal";
+        bool isGoal = result == ResultGoal;
 
-        if (isGoal)
-        {
-            // Shooter celebrates: small jump + arms-up via Idle restart with
-            // a vertical bob. Keeper stays in FallenIdle (already set by Keeper.cs).
-            if (shooterAnim != null) shooterAnim.Play("Idle");
-        }
-        else
-        {
-            // Shooter hangs head: stay in Kick follow-through, lean forward.
-            // Keeper holds save pose (FallenIdle).
-        }
+        // Shooter celebrates by re-entering Idle (relaxed pose, hops layered on top).
+        // For a save, we hold the Kick follow-through pose and lean forward instead.
+        // Keeper stays in FallenIdle either way (transition handled by Keeper.Update).
+        if (isGoal && shooterAnim != null) shooterAnim.Play(AnimIdle);
 
-        while (elapsed < duration)
+        while (elapsed < ReactionDuration)
         {
             elapsed += Time.deltaTime;
-            float t = elapsed / duration;
+            float t = elapsed / ReactionDuration;
 
             if (shooter != null)
             {
                 if (isGoal)
                 {
-                    // Two small celebratory hops in the 1.8s window.
-                    float hop = Mathf.Abs(Mathf.Sin(t * Mathf.PI * 2f)) * 0.35f;
+                    // Celebratory hops across the reaction window.
+                    float hop = Mathf.Abs(Mathf.Sin(t * Mathf.PI * CelebrationHops)) * CelebrationHopHeight;
                     shooter.transform.position = shooterBase + new Vector3(0, hop, 0);
                 }
                 else
                 {
-                    // Gradual lean forward (head-down) up to ~20°.
-                    float lean = Mathf.SmoothStep(0f, 20f, t);
+                    // Gradual head-down lean to convey defeat.
+                    float lean = Mathf.SmoothStep(0f, DefeatLeanDegrees, t);
                     shooter.transform.rotation = shooterBaseRot * Quaternion.Euler(lean, 0, 0);
                 }
             }
@@ -232,29 +271,51 @@ public class ShotManager : MonoBehaviour
     {
         if (!isPlaying) return;
 
-        var scoreStyle = new GUIStyle(GUI.skin.label);
-        scoreStyle.fontSize = 32;
-        scoreStyle.alignment = TextAnchor.UpperCenter;
-        scoreStyle.normal.textColor = Color.white;
+        EnsureGuiStyles();
+
         GUI.Label(new Rect(0, 20, Screen.width, 50), currentScore, scoreStyle);
 
         if (showResult)
         {
-            var resultStyle = new GUIStyle(GUI.skin.label);
-            resultStyle.fontSize = 72;
-            resultStyle.fontStyle = FontStyle.Bold;
-            resultStyle.alignment = TextAnchor.MiddleCenter;
-            resultStyle.normal.textColor = Color.white;
             GUI.Label(new Rect(0, 0, Screen.width, Screen.height), resultMessage, resultStyle);
         }
         else if (!string.IsNullOrEmpty(currentFeedback))
         {
-            var feedbackStyle = new GUIStyle(GUI.skin.label);
-            feedbackStyle.fontSize = 64;
-            feedbackStyle.fontStyle = FontStyle.Bold;
-            feedbackStyle.alignment = TextAnchor.MiddleCenter;
+            // Color varies per round; mutate the cached style rather than allocate.
             feedbackStyle.normal.textColor = feedbackColor;
             GUI.Label(new Rect(0, Screen.height / 2 - 100, Screen.width, 100), currentFeedback, feedbackStyle);
         }
+    }
+
+    /// <summary>
+    /// Build OnGUI styles once on first paint. `GUI.skin` is only reliably
+    /// available inside an OnGUI callback, so we lazy-init here rather than in
+    /// Start. Subsequent frames reuse the same instances — no GC pressure.
+    /// </summary>
+    private void EnsureGuiStyles()
+    {
+        if (scoreStyle != null) return;
+
+        scoreStyle = new GUIStyle(GUI.skin.label)
+        {
+            fontSize = ScoreFontSize,
+            alignment = TextAnchor.UpperCenter,
+        };
+        scoreStyle.normal.textColor = Color.white;
+
+        resultStyle = new GUIStyle(GUI.skin.label)
+        {
+            fontSize = ResultFontSize,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter,
+        };
+        resultStyle.normal.textColor = Color.white;
+
+        feedbackStyle = new GUIStyle(GUI.skin.label)
+        {
+            fontSize = FeedbackFontSize,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter,
+        };
     }
 }
