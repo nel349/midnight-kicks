@@ -19,7 +19,7 @@ ZK-powered penalty shootout. Android UaaL. URP, mobile-friendly stylized art.
 - [ ] **Stadium backdrop + floodlights** — fills the void, sells "midnight"
 
 ## Phase 2 — Animation & cinematic
-- [ ] **Verify dive directions** — left vs right may need Mirror; goal/save/miss reaction states
+- [~] **Verify dive directions** — left vs right may need Mirror; goal/save/miss reaction states (FallenIdle chained; standing up + dive-direction mirror pending)
 - [ ] **Multi-camera director** — wide, behind-shooter, kick close-up, behind-keeper
 - [ ] **Lighting refinement** — night skybox, floodlight pools, color grading
 

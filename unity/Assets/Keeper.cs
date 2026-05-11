@@ -9,9 +9,8 @@ public class Keeper : MonoBehaviour
     );
 
     private Vector3 initialPosition;
-    private Vector3 targetPosition;
     private Quaternion initialRotation;
-    private Quaternion targetRotation;
+    private Vector3 targetPosition;
     private bool isDiving = false;
     private float diveTimer = 0f;
     private float currentDiveDuration = 1f;
@@ -22,34 +21,29 @@ public class Keeper : MonoBehaviour
         initialPosition = transform.position;
         initialRotation = transform.rotation;
         targetPosition = initialPosition;
-        targetRotation = initialRotation;
         animator = GetComponent<Animator>();
     }
 
     void Update()
     {
-        if (isDiving)
-        {
-            diveTimer += Time.deltaTime;
-            float t = Mathf.Clamp01(diveTimer / currentDiveDuration);
-            float curveT = diveCurve.Evaluate(t);
-            transform.position = Vector3.Lerp(initialPosition, targetPosition, curveT);
-            transform.rotation = Quaternion.Slerp(initialRotation, targetRotation, curveT);
+        if (!isDiving) return;
 
-            if (t >= 1f) isDiving = false;
+        diveTimer += Time.deltaTime;
+        float t = Mathf.Clamp01(diveTimer / currentDiveDuration);
+        float curveT = diveCurve.Evaluate(t);
+        transform.position = Vector3.Lerp(initialPosition, targetPosition, curveT);
+
+        if (t >= 1f)
+        {
+            isDiving = false;
+            if (animator != null) animator.CrossFade("FallenIdle", 0.15f);
         }
     }
 
     public void Dive(int direction, float duration = 1.0f)
     {
         float xOffset = (direction - 1) * 2.5f;
-        float yOffset = (direction == 1) ? 0.6f : 0.2f;
-        targetPosition = new Vector3(initialPosition.x + xOffset, initialPosition.y + yOffset, initialPosition.z);
-
-        float tiltZ = 0f;
-        if (direction == 0) tiltZ = 65f;
-        else if (direction == 2) tiltZ = -65f;
-        targetRotation = Quaternion.Euler(0, 0, tiltZ) * initialRotation;
+        targetPosition = new Vector3(initialPosition.x + xOffset, initialPosition.y, initialPosition.z);
 
         currentDiveDuration = duration;
         diveTimer = 0f;
@@ -68,7 +62,6 @@ public class Keeper : MonoBehaviour
         transform.position = initialPosition;
         transform.rotation = initialRotation;
         targetPosition = initialPosition;
-        targetRotation = initialRotation;
         isDiving = false;
         if (animator != null) animator.Play("Idle");
     }
