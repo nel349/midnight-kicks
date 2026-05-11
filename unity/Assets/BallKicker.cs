@@ -23,8 +23,8 @@
       {
           if (rb == null) rb = GetComponent<Rigidbody>();
           // 0: Left, 1: Center, 2: Right
-          float xOffset = (directionIndex - 1) * 2.0f;
-          Vector3 target = new Vector3(xOffset, 1.8f, 10f);
+          float xOffset = (directionIndex - 1) * 2.5f;
+          Vector3 target = new Vector3(xOffset, 1.8f, 10.5f);
           Kick(target);
       }
 

@@ -14,7 +14,7 @@ ZK-powered penalty shootout. Android UaaL. URP, mobile-friendly stylized art.
 
 ## Phase 1 — Environment
 - [x] **Real soccer ball** — 0.22m regulation, not a primitive sphere
-- [ ] **Real goal + net** — FIFA proportions (7.32×2.44m); update keeper/ball offsets to match
+- [x] **Real goal + net** — FIFA proportions (7.32×2.44m); update keeper/ball offsets to match
 - [ ] **Grass pitch with painted markings** — penalty box, spot, arc
 - [ ] **Stadium backdrop + floodlights** — fills the void, sells "midnight"
 

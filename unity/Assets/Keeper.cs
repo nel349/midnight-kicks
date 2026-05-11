@@ -42,7 +42,7 @@ public class Keeper : MonoBehaviour
 
     public void Dive(int direction, float duration = 1.0f)
     {
-        float xOffset = (direction - 1) * 1.7f;
+        float xOffset = (direction - 1) * 2.5f;
         float yOffset = (direction == 1) ? 0.6f : 0.2f;
         targetPosition = new Vector3(initialPosition.x + xOffset, initialPosition.y + yOffset, initialPosition.z);
 

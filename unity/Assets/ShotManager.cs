@@ -8,8 +8,8 @@ public class ShotManager : MonoBehaviour
     public BallKicker ballKicker;
     public Keeper keeper;
     
-    public Vector3 shooterStartPos = new Vector3(0, 0.5f, -3.5f);
-    public Vector3 shooterKickPos = new Vector3(0, 0.5f, -0.3f);
+    public Vector3 shooterStartPos = new Vector3(-1.2f, 0.5f, -3.2f);
+    public Vector3 shooterKickPos = new Vector3(-0.3f, 0.5f, -0.2f);
     
     private GameObject shooter;
     private Animator shooterAnim;
@@ -22,8 +22,8 @@ public class ShotManager : MonoBehaviour
     private Color feedbackColor = Color.white;
 
     private static readonly Vector3 GoalLookTarget = new Vector3(0, 1.4f, 11f);
-    private static readonly Vector3 IntroStartCam = new Vector3(4f, 0.8f, -3.5f);
-    private static readonly Vector3 PlayCamPos = new Vector3(0, 1.9f, -7f);
+    private static readonly Vector3 IntroStartCam = new Vector3(-6f, 2.5f, -1f);
+    private static readonly Vector3 PlayCamPos = new Vector3(-4f, 1.7f, -3f);
 
     void Update()
     {
@@ -125,25 +125,23 @@ public class ShotManager : MonoBehaviour
         currentFeedback = "";
         yield return new WaitForSeconds(1.2f);
 
-        float runTime = 0.7f;
+        if (shooterAnim != null) shooterAnim.Play("Run");
+
+        float runTime = 0.9f;
         float elapsed = 0f;
         while (elapsed < runTime)
         {
             elapsed += Time.deltaTime;
             float t = elapsed / runTime;
             if (shooter != null)
-            {
                 shooter.transform.position = Vector3.Lerp(shooterStartPos, shooterKickPos, t);
-                float lean = Mathf.Lerp(0f, 12f, t);
-                shooter.transform.rotation = Quaternion.Euler(lean, 0, 0) * shooterInitialRotation;
-            }
             yield return null;
         }
         if (shooter != null)
             shooter.transform.position = shooterKickPos;
 
         if (shooterAnim != null) shooterAnim.Play("Kick");
-        yield return StartCoroutine(KickLean(0.35f));
+        yield return new WaitForSeconds(0.75f);
 
         if (ballKicker != null) ballKicker.KickTo(round.shootDir);
         yield return new WaitForSeconds(0.05f);
@@ -155,26 +153,6 @@ public class ShotManager : MonoBehaviour
         feedbackColor = round.result == "goal" ? Color.green : Color.yellow;
 
         yield return new WaitForSeconds(1.8f);
-
-        if (shooter != null) shooter.transform.rotation = shooterInitialRotation;
-    }
-
-    private IEnumerator KickLean(float duration)
-    {
-        if (shooter == null)
-        {
-            yield return new WaitForSeconds(duration);
-            yield break;
-        }
-        float elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float t = elapsed / duration;
-            float lean = Mathf.Lerp(12f, 30f, t);
-            shooter.transform.rotation = Quaternion.Euler(lean, 0, 0) * shooterInitialRotation;
-            yield return null;
-        }
     }
 
     void OnGUI()
