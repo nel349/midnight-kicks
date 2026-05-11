@@ -48,7 +48,7 @@ hasKicked = true;
           if (rb == null) rb = GetComponent<Rigidbody>();
           rb.linearVelocity = Vector3.zero;
 rb.angularVelocity = Vector3.zero;
-          transform.position = new Vector3(0, 0.5f, 0);
+          transform.position = new Vector3(0, 0.11f, 0);
           hasKicked = false;                                                                                                              
       }
   }      
