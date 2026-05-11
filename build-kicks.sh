@@ -11,6 +11,27 @@ echo "  Kuira: $KUIRA_ROOT"
 echo "  Kicks: $KICKS_ROOT"
 echo ""
 
+# Step 0: Pick up newer Unity export if present
+echo "── Step 0: Unity sync ──"
+UNITY_EXPORT="$KICKS_ROOT/unity/build/android-export/unityLibrary"
+TARGET="$KICKS_ROOT/unityLibrary"
+if [ -d "$UNITY_EXPORT" ]; then
+    export_mtime=$(stat -f %m "$UNITY_EXPORT" 2>/dev/null || stat -c %Y "$UNITY_EXPORT" 2>/dev/null)
+    target_mtime=$(stat -f %m "$TARGET/build.gradle" 2>/dev/null || stat -c %Y "$TARGET/build.gradle" 2>/dev/null || echo 0)
+    if [ "$export_mtime" -gt "$target_mtime" ]; then
+        echo "  Newer Unity export detected — syncing"
+        rm -rf "$TARGET"
+        cp -R "$UNITY_EXPORT" "$TARGET"
+        echo "  ✓ unityLibrary updated"
+    else
+        echo "  ✓ unityLibrary up-to-date"
+    fi
+else
+    echo "  ⚠ No Unity export at unity/build/android-export/ — using existing unityLibrary/"
+    echo "    To refresh: in Unity, menu Midnight Kicks → Export Android Library"
+fi
+echo ""
+
 # Step 1: Cross-compile Rust FFI for arm64
 echo "── Step 1: Rust FFI (arm64) ──"
 cd "$KUIRA_ROOT"

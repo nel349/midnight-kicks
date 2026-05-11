@@ -6,13 +6,15 @@ using System.IO;
 /// Exports the Unity project as an Android Library (UaaL) for embedding
 /// in the Midnight Kicks Kotlin app.
 ///
-/// Run via CLI:
+/// Editor: menu "Midnight Kicks → Export Android Library"
+///
+/// CLI:
 ///   Unity -batchmode -nographics -quit \
-///     -projectPath /Users/norman/kick-prototype \
+///     -projectPath /path/to/midnight-kicks/unity \
 ///     -executeMethod ExportAndroidLibrary.Export
 ///
-/// Output: kick-prototype/build/android-export/unityLibrary/
-/// Copy unityLibrary/ into the Kotlin project.
+/// Output: unity/build/android-export/<projectName>/unityLibrary/
+/// Copy unityLibrary/ into ../unityLibrary/ on the Kotlin side.
 /// </summary>
 public class ExportAndroidLibrary
 {
@@ -20,6 +22,7 @@ public class ExportAndroidLibrary
         Application.dataPath, "..", "build", "android-export"
     );
 
+    [MenuItem("Midnight Kicks/Export Android Library")]
     public static void Export()
     {
         Debug.Log($"[UaaL Export] Starting Android library export to: {ExportPath}");
