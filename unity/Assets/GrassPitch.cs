@@ -1,19 +1,31 @@
 using UnityEngine;
 
 /// <summary>
-/// Replaces the Field GameObject's material with a procedurally generated
-/// grass texture: alternating mowing stripes plus Perlin noise grain.
-/// No texture imports. Self-attaches at scene load.
+/// Builds the grass pitch surface: resizes the Field plane to 50×40m so it
+/// holds true-FIFA-proportion markings, then textures it.
 ///
-/// Mowing stripes run perpendicular to the goal line so the stadium-camera
-/// view picks up the depth banding professional pitches show.
+/// Texture source order:
+///   1. <c>Assets/Resources/GrassField.(png|jpg)</c> — drop in a real tileable
+///      grass photo for a photo-real pitch.
+///   2. Procedural mowing-stripes fallback if no Resource is found, so the
+///      field always renders as grass even before the texture is added.
+///
+/// Self-attaches at scene load. No scene edits required.
+///
+/// Recommended sources for the drop-in (CC0 / free):
+///   - ambientcg.com (search "grass", "lawn")
+///   - polyhaven.com (search "grass", "soccer")
+///   - texturecan.com / freepbr.com
 /// </summary>
 public class GrassPitch : MonoBehaviour
 {
+    // Resources path — no extension, no leading "Resources/".
+    private const string GrassTextureResource = "GrassField";
+
     private const string FieldObjectName = "Field";
 
-    // Texture resolution. 512 is plenty for a tiled plane viewed from camera
-    // distance; keeps generation under 100ms on mobile.
+    // Procedural-fallback texture resolution. 512 is plenty for a tiled plane
+    // viewed from camera distance; keeps generation under 100ms on mobile.
     private const int TextureSize = 512;
     private const int StripeWidth = 64;       // pixels per mowing band
     private const float Tiling = 6f;          // tile count across the Field plane
@@ -66,8 +78,23 @@ public class GrassPitch : MonoBehaviour
             return;
         }
 
-        var texture = GenerateGrassTexture();
-        var material = new Material(shader) { name = "GrassPitch_Generated" };
+        // Prefer the drop-in texture; fall back to procedural if absent.
+        Texture2D texture = Resources.Load<Texture2D>(GrassTextureResource);
+        string source;
+        if (texture != null)
+        {
+            texture.wrapMode = TextureWrapMode.Repeat;
+            texture.filterMode = FilterMode.Trilinear;
+            source = $"Resources/{GrassTextureResource}";
+        }
+        else
+        {
+            texture = GenerateGrassTexture();
+            source = "procedural fallback (drop a tileable grass texture at " +
+                     $"unity/Assets/Resources/{GrassTextureResource}.png for photo-real)";
+        }
+
+        var material = new Material(shader) { name = "GrassPitch_Material" };
         // BaseMap (URP/Lit) and _MainTex (built-in Standard) — set both so the
         // material works in either pipeline.
         if (material.HasProperty("_BaseMap")) material.SetTexture("_BaseMap", texture);
@@ -78,7 +105,7 @@ public class GrassPitch : MonoBehaviour
         if (material.HasProperty("_Glossiness")) material.SetFloat("_Glossiness", 0.1f);
 
         renderer.material = material;
-        Debug.Log("[GrassPitch] Applied procedural grass to Field");
+        Debug.Log($"[GrassPitch] Applied grass to Field — source: {source}");
     }
 
     private Texture2D GenerateGrassTexture()
