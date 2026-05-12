@@ -10,29 +10,40 @@ using UnityEngine;
 /// </summary>
 public class CrowdBackdrop : MonoBehaviour
 {
-    // Geometry: 24 panels around the field center for smoother silhouette.
-    // Pushed out past the new 50×40m field, tall enough to fill the horizon
-    // from any reasonable camera angle.
-    private const int PanelCount = 24;
+    // Geometry: more panels = smoother silhouette. Pushed out past the new
+    // 50×40m field, tall enough to fill the horizon from any reasonable
+    // camera angle.
+    private const int PanelCount = 36;
     private const float Radius = 45f;
-    private const float PanelHeight = 18f;
+    private const float PanelHeight = 22f;
     private const float BaseY = 0f;
     private static readonly Vector3 RingCenter = new Vector3(0f, 0f, 4f);
 
-    // Three-band gradient: dark base (stands closer to pitch), lighter mid
-    // (crowd faces catching floodlight bleed), darker top (back of stand
-    // against the night sky).
+    // Three-band base gradient: dark base (stands closer to pitch), lighter
+    // mid (crowd faces catching floodlight bleed), darker top (back of stand
+    // against the night sky). Each panel multiplies these by a random
+    // brightness in [BrightnessVarianceMin, BrightnessVarianceMax] so the
+    // ring reads as crowd sections, not a uniform wall.
     private static readonly Color BottomColor = new Color(0.10f, 0.12f, 0.16f, 1f);
-    private static readonly Color MidColor    = new Color(0.22f, 0.26f, 0.32f, 1f);
+    private static readonly Color MidColor    = new Color(0.28f, 0.32f, 0.38f, 1f);
     private static readonly Color TopColor    = new Color(0.14f, 0.16f, 0.22f, 1f);
+    private const float BrightnessVarianceMin = 0.6f;
+    private const float BrightnessVarianceMax = 1.4f;
 
-    // Speck lights — point lights peppered through the upper stands to read
-    // as phone screens / camera flashes / safety lighting in the crowd.
-    private const int SpeckCount = 80;
-    private const float SpeckHeightMin = 0.35f;  // 0..1 normalized along panel height
-    private const float SpeckHeightMax = 0.85f;
-    private const float SpeckSize = 0.18f;
-    private static readonly Color SpeckColor = new Color(1.0f, 0.85f, 0.55f, 1f);
+    // Audience light specks — quads visible at 45m, multiple colors to read
+    // as phone screens, camera flashes, and safety lighting in the crowd.
+    private const int SpeckCount = 280;
+    private const float SpeckHeightMin = 0.20f;  // 0..1 normalized along panel height
+    private const float SpeckHeightMax = 0.92f;
+    private const float SpeckSizeMin = 0.45f;    // visible at 45m distance
+    private const float SpeckSizeMax = 0.95f;
+    private static readonly Color[] SpeckColors = new[]
+    {
+        new Color(1.00f, 0.95f, 0.65f, 1f),  // warm white (phone screens / flashes)
+        new Color(1.00f, 0.80f, 0.45f, 1f),  // amber (incandescent)
+        new Color(0.85f, 0.95f, 1.00f, 1f),  // cool white (LED lights)
+        new Color(0.55f, 0.75f, 1.00f, 1f),  // blue (phone screens)
+    };
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void AutoCreate()
@@ -79,12 +90,15 @@ public class CrowdBackdrop : MonoBehaviour
             vertices[v + 4] = left + up;        // top-left
             vertices[v + 5] = right + up;       // top-right
 
-            colors[v + 0] = BottomColor;
-            colors[v + 1] = BottomColor;
-            colors[v + 2] = MidColor;
-            colors[v + 3] = MidColor;
-            colors[v + 4] = TopColor;
-            colors[v + 5] = TopColor;
+            // Random per-panel brightness so the ring reads as crowd
+            // sections rather than a uniform fence.
+            float tint = Random.Range(BrightnessVarianceMin, BrightnessVarianceMax);
+            colors[v + 0] = BottomColor * tint;
+            colors[v + 1] = BottomColor * tint;
+            colors[v + 2] = MidColor    * tint;
+            colors[v + 3] = MidColor    * tint;
+            colors[v + 4] = TopColor    * tint;
+            colors[v + 5] = TopColor    * tint;
 
             // Two quads per panel (bottom→mid, mid→top). Winding chosen so
             // the inside-facing surface (toward field center) is the front
@@ -126,17 +140,27 @@ public class CrowdBackdrop : MonoBehaviour
     }
 
     /// <summary>
-    /// Scatter small bright quads through the upper portion of the ring
-    /// to read as phone screens / camera flashes / safety lights in the
-    /// crowd. They face inward (toward field center) so the camera always
-    /// sees them.
+    /// Scatter inward-facing colored quads through the upper portion of the
+    /// ring as phone screens / camera flashes / safety lighting. Multiple
+    /// colors and per-instance sizing so the eye reads them as crowd, not
+    /// a regular pattern.
     /// </summary>
     private void ScatterAudienceSpecks()
     {
         var shader = Shader.Find("Universal Render Pipeline/Unlit")
                   ?? Shader.Find("Unlit/Color")
                   ?? Shader.Find("Sprites/Default");
-        var mat = new Material(shader) { color = SpeckColor };
+
+        // One material per color so draw calls batch; the speck-color array
+        // is small (4 entries) so this is fine.
+        var materials = new Material[SpeckColors.Length];
+        for (int i = 0; i < SpeckColors.Length; i++)
+        {
+            materials[i] = new Material(shader) { color = SpeckColors[i] };
+            // Ensure both faces draw — a speck might end up facing slightly
+            // outward depending on LookAt corner cases.
+            if (materials[i].HasProperty("_Cull")) materials[i].SetFloat("_Cull", 0f);
+        }
 
         var parent = new GameObject("AudienceSpecks");
         parent.transform.SetParent(transform, worldPositionStays: false);
@@ -147,11 +171,10 @@ public class CrowdBackdrop : MonoBehaviour
             float angle = Random.Range(0f, Mathf.PI * 2f);
             float heightT = Random.Range(SpeckHeightMin, SpeckHeightMax);
             // Sit just inside the ring radius so they're not occluded by it.
-            float r = Radius - 0.05f;
+            float r = Radius - 0.2f;
             var pos = new Vector3(Mathf.Cos(angle) * r, heightT * PanelHeight, Mathf.Sin(angle) * r);
 
             var speck = GameObject.CreatePrimitive(PrimitiveType.Quad);
-            // Strip the collider — these are visual-only.
             var col = speck.GetComponent<Collider>();
             if (col != null) Destroy(col);
 
@@ -159,12 +182,11 @@ public class CrowdBackdrop : MonoBehaviour
             speck.transform.SetParent(parent.transform, worldPositionStays: false);
             speck.transform.localPosition = pos;
             speck.transform.LookAt(RingCenter + Vector3.up * heightT * PanelHeight);
-            // Quads default to 1×1m — shrink to a speck.
-            float size = SpeckSize * Random.Range(0.7f, 1.4f);
+            float size = Random.Range(SpeckSizeMin, SpeckSizeMax);
             speck.transform.localScale = new Vector3(size, size, 1f);
 
             var rend = speck.GetComponent<MeshRenderer>();
-            rend.sharedMaterial = mat;
+            rend.sharedMaterial = materials[Random.Range(0, materials.Length)];
             rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             rend.receiveShadows = false;
         }

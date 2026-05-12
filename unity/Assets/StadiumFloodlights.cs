@@ -26,14 +26,21 @@ public class StadiumFloodlights : MonoBehaviour
 
     // Warm-white floodlight color, slightly desaturated.
     private static readonly Color FloodlightColor = new Color(1.0f, 0.97f, 0.88f, 1f);
-    private const float FloodlightIntensity = 8f;     // Stadium lights are bright — make them feel it
+    private const float FloodlightIntensity = 12f;    // Stadium lights are bright — make them feel it
     private const float FloodlightRange = 90f;
-    private const float FloodlightSpotAngle = 100f;   // wide enough that the four cones overlap on the pitch
+    private const float FloodlightSpotAngle = 80f;    // narrower → visible pools, not flat wash
 
     // Moonlit override for the scene's existing Directional Light. Keep a
     // gentle fill — at near-zero you lose all the model surface shading.
+    // Below the floodlight intensity so the pools dominate visually.
     private static readonly Color MoonlightColor = new Color(0.55f, 0.65f, 0.85f, 1f);
-    private const float MoonlightIntensity = 0.8f;
+    private const float MoonlightIntensity = 0.5f;
+
+    // Linear fog adds depth — the field bleeds into the night rather than
+    // ending at a hard edge. Far distance roughly matches the crowd-ring radius.
+    private static readonly Color FogColor = new Color(0.08f, 0.10f, 0.16f, 1f);
+    private const float FogStart = 20f;
+    private const float FogEnd = 75f;
 
     // Ambient: low enough to read as night, high enough that nothing is true
     // black. Skybox-gradient via RenderSettings.ambientSkyColor below.
@@ -58,7 +65,20 @@ public class StadiumFloodlights : MonoBehaviour
         SpawnFloodlights();
         TintDirectionalLightToNight();
         SetAmbientToNight();
+        SetNightFog();
         TintCameraBackground();
+    }
+
+    private static void SetNightFog()
+    {
+        // Linear fog gives a controlled "field fades into the night" effect.
+        // Color matches the night-sky tone so distant objects blend instead
+        // of silhouetting awkwardly.
+        RenderSettings.fog = true;
+        RenderSettings.fogMode = FogMode.Linear;
+        RenderSettings.fogColor = FogColor;
+        RenderSettings.fogStartDistance = FogStart;
+        RenderSettings.fogEndDistance = FogEnd;
     }
 
     private void SpawnFloodlights()
@@ -120,11 +140,32 @@ public class StadiumFloodlights : MonoBehaviour
 
     private static void TintCameraBackground()
     {
-        // Camera defaults to clear-to-black on URP. Replace with deep night
-        // blue so the area above the crowd ring reads as sky.
+        // Switch camera to render a procedural skybox instead of a flat
+        // black/blue color. The procedural shader gives a horizon→zenith
+        // gradient that hides the abrupt seam between the crowd-ring top
+        // and "sky" above. We override the sun to near-zero exposure so
+        // the gradient reads as a night sky, not dusk.
         var cam = Camera.main;
         if (cam == null) return;
-        cam.clearFlags = CameraClearFlags.SolidColor;
-        cam.backgroundColor = NightSkyColor;
+
+        var skyShader = Shader.Find("Skybox/Procedural");
+        if (skyShader == null)
+        {
+            // Fallback: just tint the solid background.
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = NightSkyColor;
+            return;
+        }
+
+        var skyMat = new Material(skyShader) { name = "NightSkybox" };
+        skyMat.SetColor("_SkyTint", new Color(0.18f, 0.22f, 0.32f, 1f));     // upper sky
+        skyMat.SetColor("_GroundColor", new Color(0.05f, 0.06f, 0.10f, 1f)); // below-horizon
+        skyMat.SetFloat("_AtmosphereThickness", 0.6f);                       // softer transition
+        skyMat.SetFloat("_Exposure", 0.45f);                                 // night, not day
+        skyMat.SetFloat("_SunSize", 0f);                                     // no sun
+        skyMat.SetFloat("_SunSizeConvergence", 0f);
+
+        RenderSettings.skybox = skyMat;
+        cam.clearFlags = CameraClearFlags.Skybox;
     }
 }
