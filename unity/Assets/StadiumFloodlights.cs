@@ -1,118 +1,75 @@
 using UnityEngine;
 
 /// <summary>
-/// Adds four corner floodlights aimed at the field center and tones the
-/// existing Directional Light to a cool moonlit blue. Sells the "midnight"
-/// aesthetic without requiring any asset imports.
+/// Daylight lighting setup for the pitch — bright sun, blue sky, high
+/// ambient. Replaces the previous night-stadium-with-floodlights approach
+/// that was reading as obscure and dim regardless of intensity tuning.
 ///
-/// Auto-attaches at scene load. Idempotent — re-running won't duplicate
-/// fixtures.
+/// Reasons we switched:
+///   - The four floodlights at corners couldn't compete with URP's
+///     post-processing tonemapping (Global Volume in the scene) which
+///     was crushing brightness no matter how high the intensity went.
+///   - The crowd texture in Resources/StadiumCrowd is daylit anyway,
+///     so a daylight scene matches without any color-grade gymnastics.
+///   - Easier reads for gameplay — characters and ball are immediately
+///     visible without dramatic shadow falloff hiding them.
+///
+/// Class name kept as StadiumFloodlights to avoid breaking the
+/// RuntimeInitializeOnLoadMethod auto-create chain in the build. The
+/// behavior is now a daylight setup.
 /// </summary>
 public class StadiumFloodlights : MonoBehaviour
 {
-    // Field center the floodlights aim at (matches camera LookAt target).
-    private static readonly Vector3 FieldCenter = new Vector3(0f, 0f, 4f);
+    // ── Sun (the scene's existing Directional Light, re-tinted) ──
+    // Slight warm bias to read as midday rather than overcast.
+    private static readonly Color SunColor = new Color(1.00f, 0.96f, 0.90f, 1f);
+    private const float SunIntensity = 1.4f;
+    private static readonly Vector3 SunEulerAngles = new Vector3(50f, -30f, 0f); // afternoon angle
 
-    // Four corner tower positions, set just outside the 50×40m playing surface
-    // (GrassPitch enlarges Field to scale (5,1,4); pitch bounds X=±25, Z=-20..+20).
-    // Y high enough to read as stadium-tower lights.
-    private static readonly Vector3[] TowerPositions = new Vector3[]
-    {
-        new Vector3(-30f, 22f, -25f),
-        new Vector3( 30f, 22f, -25f),
-        new Vector3(-30f, 22f,  25f),
-        new Vector3( 30f, 22f,  25f),
-    };
+    // ── Ambient ──
+    // Trilight gradient so the field surface and the crowd ring pick up
+    // slightly different tones. Bright enough that nothing is in shadow.
+    private static readonly Color AmbientSkyColor    = new Color(0.55f, 0.70f, 0.95f, 1f);
+    private static readonly Color AmbientEquatorColor = new Color(0.55f, 0.60f, 0.65f, 1f);
+    private static readonly Color AmbientGroundColor = new Color(0.30f, 0.34f, 0.28f, 1f);
 
-    // Warm-white floodlight color, slightly desaturated.
-    private static readonly Color FloodlightColor = new Color(1.0f, 0.97f, 0.88f, 1f);
-    private const float FloodlightIntensity = 12f;    // Stadium lights are bright — make them feel it
-    private const float FloodlightRange = 90f;
-    private const float FloodlightSpotAngle = 80f;    // narrower → visible pools, not flat wash
-
-    // Moonlit override for the scene's existing Directional Light. Keep a
-    // gentle fill — at near-zero you lose all the model surface shading.
-    // Below the floodlight intensity so the pools dominate visually.
-    private static readonly Color MoonlightColor = new Color(0.55f, 0.65f, 0.85f, 1f);
-    private const float MoonlightIntensity = 0.5f;
-
-    // Linear fog adds depth — the field bleeds into the night rather than
-    // ending at a hard edge. Far distance roughly matches the crowd-ring radius.
-    private static readonly Color FogColor = new Color(0.08f, 0.10f, 0.16f, 1f);
-    private const float FogStart = 20f;
-    private const float FogEnd = 75f;
-
-    // Ambient: low enough to read as night, high enough that nothing is true
-    // black. Skybox-gradient via RenderSettings.ambientSkyColor below.
-    private static readonly Color AmbientSkyColor    = new Color(0.10f, 0.13f, 0.20f, 1f);
-    private static readonly Color AmbientEquatorColor = new Color(0.08f, 0.10f, 0.14f, 1f);
-    private static readonly Color AmbientGroundColor = new Color(0.04f, 0.06f, 0.05f, 1f);
-    // Camera background — replace the default black with a dark blue so the
-    // void around the crowd ring reads as deep night sky.
-    private static readonly Color NightSkyColor = new Color(0.03f, 0.05f, 0.10f, 1f);
+    // ── Sky (procedural skybox) ──
+    private static readonly Color SkyTint = new Color(0.55f, 0.75f, 1.00f, 1f);
+    private static readonly Color SkyGroundColor = new Color(0.45f, 0.55f, 0.55f, 1f);
+    private const float SkyAtmosphereThickness = 1.0f;
+    private const float SkyExposure = 1.3f;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void AutoCreate()
     {
         if (FindFirstObjectByType<StadiumFloodlights>() != null) return;
-        var go = new GameObject("StadiumFloodlights");
+        var go = new GameObject("DaylightLighting");
         go.AddComponent<StadiumFloodlights>();
-        Debug.Log("[StadiumFloodlights] Auto-created");
+        Debug.Log("[DaylightLighting] Auto-created");
     }
 
     void Start()
     {
-        SpawnFloodlights();
-        TintDirectionalLightToNight();
-        SetAmbientToNight();
-        SetNightFog();
-        TintCameraBackground();
+        TintDirectionalLightToDay();
+        SetAmbientToDay();
+        DisableFog();
+        SetSkyToDay();
+        DisableScenePostProcessingVolumes();
     }
 
-    private static void SetNightFog()
+    private void TintDirectionalLightToDay()
     {
-        // Linear fog gives a controlled "field fades into the night" effect.
-        // Color matches the night-sky tone so distant objects blend instead
-        // of silhouetting awkwardly.
-        RenderSettings.fog = true;
-        RenderSettings.fogMode = FogMode.Linear;
-        RenderSettings.fogColor = FogColor;
-        RenderSettings.fogStartDistance = FogStart;
-        RenderSettings.fogEndDistance = FogEnd;
-    }
-
-    private void SpawnFloodlights()
-    {
-        for (int i = 0; i < TowerPositions.Length; i++)
-        {
-            var lightGO = new GameObject($"Floodlight_{i}");
-            lightGO.transform.SetParent(transform, worldPositionStays: false);
-            lightGO.transform.position = TowerPositions[i];
-            lightGO.transform.LookAt(FieldCenter);
-
-            var light = lightGO.AddComponent<Light>();
-            light.type = LightType.Spot;
-            light.color = FloodlightColor;
-            light.intensity = FloodlightIntensity;
-            light.range = FloodlightRange;
-            light.spotAngle = FloodlightSpotAngle;
-            light.shadows = LightShadows.Soft;
-            light.shadowStrength = 0.6f;
-        }
-    }
-
-    private void TintDirectionalLightToNight()
-    {
-        // The scene's existing key Directional Light is daytime-ish. Override
-        // to a cool moonlight to match the floodlight pools.
         var directional = FindDirectionalLight();
         if (directional == null)
         {
-            Debug.LogWarning("[StadiumFloodlights] No Directional Light found to tint");
+            Debug.LogWarning("[DaylightLighting] No Directional Light found");
             return;
         }
-        directional.color = MoonlightColor;
-        directional.intensity = MoonlightIntensity;
+        directional.color = SunColor;
+        directional.intensity = SunIntensity;
+        directional.transform.rotation = Quaternion.Euler(SunEulerAngles);
+        directional.shadows = LightShadows.Soft;
+        directional.shadowStrength = 0.7f;
     }
 
     private static Light FindDirectionalLight()
@@ -125,12 +82,8 @@ public class StadiumFloodlights : MonoBehaviour
         return null;
     }
 
-    private static void SetAmbientToNight()
+    private static void SetAmbientToDay()
     {
-        // Use a three-color gradient so the field surface and the crowd ring
-        // pick up slightly different ambient tones (sky tint above, grass tint
-        // below). This makes the void around the floodlight pools feel like
-        // night atmosphere rather than dead black.
         RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
         RenderSettings.ambientSkyColor = AmbientSkyColor;
         RenderSettings.ambientEquatorColor = AmbientEquatorColor;
@@ -138,34 +91,63 @@ public class StadiumFloodlights : MonoBehaviour
         RenderSettings.ambientIntensity = 1f;
     }
 
-    private static void TintCameraBackground()
+    private static void DisableFog()
     {
-        // Switch camera to render a procedural skybox instead of a flat
-        // black/blue color. The procedural shader gives a horizon→zenith
-        // gradient that hides the abrupt seam between the crowd-ring top
-        // and "sky" above. We override the sun to near-zero exposure so
-        // the gradient reads as a night sky, not dusk.
+        // Night fog was darkening distant geometry. For a clear daytime
+        // shoot we don't want any fog at all.
+        RenderSettings.fog = false;
+    }
+
+    private void SetSkyToDay()
+    {
         var cam = Camera.main;
         if (cam == null) return;
 
         var skyShader = Shader.Find("Skybox/Procedural");
         if (skyShader == null)
         {
-            // Fallback: just tint the solid background.
             cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = NightSkyColor;
+            cam.backgroundColor = SkyTint;
             return;
         }
 
-        var skyMat = new Material(skyShader) { name = "NightSkybox" };
-        skyMat.SetColor("_SkyTint", new Color(0.18f, 0.22f, 0.32f, 1f));     // upper sky
-        skyMat.SetColor("_GroundColor", new Color(0.05f, 0.06f, 0.10f, 1f)); // below-horizon
-        skyMat.SetFloat("_AtmosphereThickness", 0.6f);                       // softer transition
-        skyMat.SetFloat("_Exposure", 0.45f);                                 // night, not day
-        skyMat.SetFloat("_SunSize", 0f);                                     // no sun
-        skyMat.SetFloat("_SunSizeConvergence", 0f);
+        var skyMat = new Material(skyShader) { name = "DaySkybox" };
+        skyMat.SetColor("_SkyTint", SkyTint);
+        skyMat.SetColor("_GroundColor", SkyGroundColor);
+        skyMat.SetFloat("_AtmosphereThickness", SkyAtmosphereThickness);
+        skyMat.SetFloat("_Exposure", SkyExposure);
+        skyMat.SetFloat("_SunSize", 0.04f);
+        skyMat.SetFloat("_SunSizeConvergence", 5f);
 
         RenderSettings.skybox = skyMat;
         cam.clearFlags = CameraClearFlags.Skybox;
+    }
+
+    /// <summary>
+    /// Disable any post-processing Volumes in the scene. The project's
+    /// Global Volume was likely the cause of repeated reports of "still
+    /// too dim" — it applies tonemapping / color grading that we can't
+    /// tune from outside the editor. Turning the Volume off lets the
+    /// raw lit colors through.
+    /// </summary>
+    private static void DisableScenePostProcessingVolumes()
+    {
+        // UnityEngine.Rendering.Volume is the URP/HDRP post-FX entry point.
+        // Use string lookup to avoid a hard dependency on the URP package
+        // namespace at compile time if anyone reuses this file.
+        var volumeType = System.Type.GetType(
+            "UnityEngine.Rendering.Volume, Unity.RenderPipelines.Core.Runtime");
+        if (volumeType == null) return;
+
+        var volumes = FindObjectsByType(volumeType, FindObjectsSortMode.None);
+        foreach (var v in volumes)
+        {
+            if (v is Behaviour b)
+            {
+                b.enabled = false;
+            }
+        }
+        if (volumes.Length > 0)
+            Debug.Log($"[DaylightLighting] Disabled {volumes.Length} post-processing Volume(s)");
     }
 }
