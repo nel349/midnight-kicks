@@ -57,6 +57,33 @@ public class StadiumFloodlights : MonoBehaviour
         DisableFog();
         SetSkyToDay();
         DisableScenePostProcessingVolumes();
+        DisableCameraPostProcessing();
+    }
+
+    /// <summary>
+    /// Belt-and-braces post-processing kill. The Volume disable handles
+    /// scene-level overrides; this turns off the URP per-camera post-FX
+    /// stack, which can re-enable bloom/tonemapping independently of any
+    /// Volume. White blob in the center of frame was likely bloom.
+    /// </summary>
+    private static void DisableCameraPostProcessing()
+    {
+        var cam = Camera.main;
+        if (cam == null) return;
+
+        // No-HDR removes the headroom that bloom needs to blow out.
+        cam.allowHDR = false;
+
+        // Toggle the URP additional camera data via reflection so we don't
+        // need a compile-time dependency on the URP package namespace.
+        var dataComp = cam.GetComponent("UniversalAdditionalCameraData");
+        if (dataComp == null) return;
+        var prop = dataComp.GetType().GetProperty("renderPostProcessing");
+        if (prop != null && prop.CanWrite)
+        {
+            prop.SetValue(dataComp, false);
+            Debug.Log("[DaylightLighting] Disabled URP camera post-processing");
+        }
     }
 
     private void TintDirectionalLightToDay()
@@ -107,29 +134,16 @@ public class StadiumFloodlights : MonoBehaviour
 
     private void SetSkyToDay()
     {
+        // Solid-color sky. Skybox/Procedural kept drawing a bright sun disc
+        // bleeding through the goal opening regardless of _SunSize tweaks
+        // (probably a shader-stripping or render-feature corner case). A
+        // flat clear color can't draw a sun by definition.
         var cam = Camera.main;
         if (cam == null) return;
-
-        var skyShader = Shader.Find("Skybox/Procedural");
-        if (skyShader == null)
-        {
-            cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = SkyTint;
-            return;
-        }
-
-        var skyMat = new Material(skyShader) { name = "DaySkybox" };
-        skyMat.SetColor("_SkyTint", SkyTint);
-        skyMat.SetColor("_GroundColor", SkyGroundColor);
-        skyMat.SetFloat("_AtmosphereThickness", SkyAtmosphereThickness);
-        skyMat.SetFloat("_Exposure", SkyExposure);
-        // _SunSize = 0 hides the sun disc entirely — was causing the bright
-        // white oval bleeding through the goal opening.
-        skyMat.SetFloat("_SunSize", 0f);
-        skyMat.SetFloat("_SunSizeConvergence", 0f);
-
-        RenderSettings.skybox = skyMat;
-        cam.clearFlags = CameraClearFlags.Skybox;
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = SkyTint;
+        // Remove any existing skybox material so it doesn't influence ambient.
+        RenderSettings.skybox = null;
     }
 
     /// <summary>
