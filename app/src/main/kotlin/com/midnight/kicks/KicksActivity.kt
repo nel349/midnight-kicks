@@ -5,11 +5,6 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import com.midnight.kuira.core.network.MidnightNetwork
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -33,24 +28,30 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
+import com.midnight.kuira.core.network.MidnightNetwork
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /**
  * Main activity for Midnight Kicks.
  *
- * Hosts the Compose menu UI (match creation, joining, results)
- * and launches Unity (via UaaL) for the 3D game portions.
+ * Hosts the Compose menu UI (match creation, joining, results) and launches
+ * Unity (via UaaL) for the 3D game portions.
  *
  * Flow: Menu → launch UnityPlayerGameActivity → Unity shows choice UI →
  * player picks 5 directions → Unity sends choicesLocked → back to Kotlin.
+ *
+ * All coroutines run on [lifecycleScope] so they cancel automatically on
+ * Activity destruction. The owned [MatchManager] is closed in [onDestroy]
+ * to release SDK / FFI resources and wipe key material.
  */
 class KicksActivity : ComponentActivity() {
 
     private val statusMessage = mutableStateOf<String?>(null)
     private val lastChoices = mutableStateOf<String?>(null)
     private var matchManager: MatchManager? = null
-    private val scope = CoroutineScope(Dispatchers.Main)
-    private var stateCollector: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,12 +80,21 @@ class KicksActivity : ComponentActivity() {
 
     override fun onDestroy() {
         UnityBridge.onMessageFromUnity = null
-        stateCollector?.cancel()
+        // MatchManager owns the SDK + the StatePoller + secret keys —
+        // closing it releases native FFI resources, the indexer websocket,
+        // and wipes key material. The lifecycleScope cancels its own
+        // coroutines automatically, but the SDK isn't lifecycle-aware.
+        matchManager?.close()
+        matchManager = null
         super.onDestroy()
     }
 
-    private fun ensureSdkReady(then: () -> Unit) {
-        scope.launch {
+    /**
+     * Lazy-init the [MatchManager] and bind its StateFlows to the UI.
+     * Re-entrant: subsequent calls are no-ops once [matchManager] is set.
+     */
+    private fun ensureSdkReady(onReady: () -> Unit) {
+        lifecycleScope.launch {
             try {
                 if (matchManager == null) {
                     val manager = MatchManager(
@@ -95,14 +105,21 @@ class KicksActivity : ComponentActivity() {
                     // Bind statusMessage to the SDK's published state — this
                     // is the canonical way to surface progress in a Kuira dApp.
                     // One StateFlow drives every label the user sees.
-                    stateCollector?.cancel()
-                    stateCollector = scope.launch {
+                    lifecycleScope.launch {
                         manager.state.collect { statusMessage.value = it.label }
+                    }
+                    // Observe on-chain state — demonstrates the same
+                    // collect-StateFlow pattern that BlockStore snapshots
+                    // and orchestrator waitForP2* hooks will use next.
+                    lifecycleScope.launch {
+                        manager.contractState.collect { snap ->
+                            if (snap != null) Log.i(TAG, "chain: ${snap.summary()}")
+                        }
                     }
                     manager.initSdk()
                     matchManager = manager
                 }
-                then()
+                onReady()
             } catch (e: Exception) {
                 Log.e(TAG, "SDK init failed", e)
                 statusMessage.value = "Error: ${e.message}"
@@ -118,9 +135,15 @@ class KicksActivity : ComponentActivity() {
             val intent = Intent(this@KicksActivity, com.unity3d.player.UnityPlayerGameActivity::class.java)
             startActivity(intent)
 
-            window.decorView.postDelayed({
+            // Wait briefly for Unity's Activity to come up before sending
+            // the first bridge message — UnityPlayer needs to be alive to
+            // receive it. Coroutine + delay is the canonical idiom; the
+            // old `decorView.postDelayed` worked but didn't share the
+            // activity's cancellation scope.
+            lifecycleScope.launch {
+                delay(UNITY_BOOT_DELAY_MS)
                 UnityBridge.sendChoicePhase(round = "regulation", playerRole = "shooter")
-            }, 2000)
+            }
         }
     }
 
@@ -130,65 +153,72 @@ class KicksActivity : ComponentActivity() {
         try {
             val json = JSONObject(jsonString)
             when (json.getString("type")) {
-                "choicesLocked" -> {
-                    val choices = json.getJSONArray("choices")
-                    val choiceList = (0 until choices.length()).map { choices.getInt(it) }
-                    val labels = choiceList.map { when (it) { 0 -> "L"; 1 -> "C"; 2 -> "R"; else -> "?" } }
-
-                    Log.i(TAG, "Player choices: $labels")
-                    lastChoices.value = "You picked: ${labels.joinToString(" ")}"
-                    // No progress callback needed — `manager.state` is
-                    // already bound to statusMessage via the stateCollector
-                    // we set up in ensureSdkReady().
-                    scope.launch {
-                        try {
-                            val result = matchManager!!.playAgainstAi(
-                                playerChoices = choiceList.toIntArray(),
-                            )
-
-                            val (p1Score, p2Score) = result.scores()
-                            val winner = when {
-                                p1Score > p2Score -> "P1"
-                                p2Score > p1Score -> "P2"
-                                else -> null
-                            }
-
-                            Log.i(TAG, "Match result: P1=$p1Score P2=$p2Score winner=$winner")
-                            statusMessage.value = "You $p1Score - $p2Score AI"
-
-                            val aiLabels = result.aiChoices.map { when (it) { 0 -> "L"; 1 -> "C"; 2 -> "R"; else -> "?" } }
-                            lastChoices.value = "You: ${labels.joinToString(" ")}  AI: ${aiLabels.joinToString(" ")}"
-
-                            // Send replay to Unity
-                            UnityBridge.sendReplay(
-                                rounds = result.toRoundResults(),
-                                p1Score = p1Score,
-                                p2Score = p2Score,
-                                winner = winner,
-                            )
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Match failed", e)
-                            statusMessage.value = "Match failed: ${e.message}"
-                        }
-                    }
-                }
-                "replayComplete" -> {
-                    Log.i(TAG, "Replay finished")
-                    val result = matchManager?.lastResult
-                    if (result != null) {
-                        val (p1, p2) = result.scores()
-                        val winText = when {
-                            p1 > p2 -> "YOU WIN!"
-                            p2 > p1 -> "AI WINS"
-                            else -> "DRAW"
-                        }
-                        statusMessage.value = "$winText  ($p1 - $p2)"
-                    }
-                }
+                "choicesLocked" -> handleChoicesLocked(json)
+                "replayComplete" -> handleReplayComplete()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse Unity message: ${e.message}")
         }
+    }
+
+    private fun handleChoicesLocked(json: JSONObject) {
+        val choices = json.getJSONArray("choices")
+        val choiceList = (0 until choices.length()).map { choices.getInt(it) }
+        val labels = choiceList.map(::directionLabel)
+
+        Log.i(TAG, "Player choices: $labels")
+        lastChoices.value = "You picked: ${labels.joinToString(" ")}"
+
+        // No progress callback needed — `manager.state` is already bound
+        // to statusMessage via the state collector in ensureSdkReady().
+        lifecycleScope.launch {
+            // Guard against a race where Unity returns choicesLocked
+            // before ensureSdkReady has finished assigning matchManager.
+            val manager = matchManager ?: run {
+                Log.e(TAG, "choicesLocked received before MatchManager was ready")
+                statusMessage.value = "Not ready yet — try again"
+                return@launch
+            }
+
+            try {
+                val result = manager.playAgainstAi(choiceList.toIntArray())
+
+                val (p1Score, p2Score) = result.scores()
+                val winner = when {
+                    p1Score > p2Score -> "P1"
+                    p2Score > p1Score -> "P2"
+                    else -> null
+                }
+
+                Log.i(TAG, "Match result: P1=$p1Score P2=$p2Score winner=$winner")
+                statusMessage.value = "You $p1Score - $p2Score AI"
+
+                val aiLabels = result.aiChoices.map(::directionLabel)
+                lastChoices.value = "You: ${labels.joinToString(" ")}  AI: ${aiLabels.joinToString(" ")}"
+
+                UnityBridge.sendReplay(
+                    rounds = result.toRoundResults(),
+                    p1Score = p1Score,
+                    p2Score = p2Score,
+                    winner = winner,
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Match failed", e)
+                statusMessage.value = "Match failed: ${e.message}"
+            }
+        }
+    }
+
+    private fun handleReplayComplete() {
+        Log.i(TAG, "Replay finished")
+        val result = matchManager?.lastResult ?: return
+        val (p1, p2) = result.scores()
+        val winText = when {
+            p1 > p2 -> "YOU WIN!"
+            p2 > p1 -> "AI WINS"
+            else -> "DRAW"
+        }
+        statusMessage.value = "$winText  ($p1 - $p2)"
     }
 
     private fun handleDeepLink(intent: Intent?) {
@@ -204,7 +234,17 @@ class KicksActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "Kicks"
+
+        /** How long to wait for UnityPlayerGameActivity to come up before sending the first bridge message. */
+        private const val UNITY_BOOT_DELAY_MS = 2_000L
     }
+}
+
+private fun directionLabel(d: Int): String = when (d) {
+    0 -> "L"
+    1 -> "C"
+    2 -> "R"
+    else -> "?"
 }
 
 @Composable

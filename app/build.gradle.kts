@@ -36,6 +36,15 @@ android {
             pickFirsts += "lib/arm64-v8a/libc++_shared.so"
         }
     }
+    testOptions {
+        unitTests {
+            // Android stubs (e.g. android.util.Log) throw on JVM by default,
+            // which makes any logging code unreachable in unit tests.
+            // Returning default values lets pure-logic tests run without
+            // Robolectric or static mocking.
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -82,4 +91,11 @@ dependencies {
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+
+    // Tests (JVM unit). MatchState / ContractStateSnapshot / pure helpers
+    // live here. JSON parsing uses Android's org.json, so we need its
+    // testing stub via robolectric OR we keep tests independent of org.json.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("org.json:json:20240303") // shadow Android's org.json on JVM
 }

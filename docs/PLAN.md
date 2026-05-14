@@ -97,7 +97,7 @@ Separate repo: `midnight-kicks/` (app/ + unity/ + contract/). Consumes Kuira SDK
   - [ ] GameController receiving choicePhase + sending choicesLocked (end-to-end)
   - [ ] Replay system (5 rounds from JSON) + stadium intro cinematic
   - [x] MatchManager — deploy/join/commit/reveal/claim circuit calls (state-machine refactor 2026-05-12: discrete suspend transitions, `StateFlow<MatchState>` as source of truth, `KicksActivity` is now a thin presenter over the SDK)
-  - [ ] StatePoller — watch opponent actions via indexer
+  - [x] StatePoller — watch opponent actions via indexer (2026-05-13: 3s poll on `MidnightConfig.queryState`, parses `penalty.compact` ledger via verified cell indices, exposed on `MatchManager.contractState: StateFlow`. Observer-only this commit; next commit wires `waitForP2Committed/Revealed` into the orchestrator)
 - [ ] **Phase 4 — Full two-player game**
   - [ ] Onboarding (passkey → biometric → play)
   - [ ] Matchmaking (QR code + deep link)
@@ -147,6 +147,8 @@ them. Add to this list whenever a MatchManager-style workaround appears.
 | 6 | Auto force-resync of dust around contract calls | Every tx after a deploy or another tx needs `wallet.forceResyncDust()` to see the new UTXO state. Should happen inside `contract.call` when needed. | Manual `forceResyncDust()` between every tx in MatchManager. |
 | 7 | Deadline / timeout helper | `BigInteger.valueOf(System.currentTimeMillis() / 1000 + N)` for unix-second deadlines is everywhere a circuit takes a deadline. | Computed by hand in MatchManager.aiJoin. |
 | 8 | "Test-mode seed" path | The shared test seed (`TEST_SEED` in KicksActivity) for fast iteration on faucet networks should be a single SDK opt-in, not a literal in every example app. | Hex literal in KicksActivity. |
+| 9 | Typed ledger wrapper from `.compact` | Every dApp parses `queryState`'s positional `JSONArray` by hand against cell indices it reads out of the compiled contract JS. Codegen a typed `Ledger` class per contract from the `.compact` source (same shape as the JS `ledger()` getter). | `ContractStateSnapshot.parse` in midnight-kicks hand-encodes 25 cell indices verified against `penalty-contract.js:3603+`. |
+| 10 | Public block subscription | `MidnightSdk.indexerClient` is `private`, so app code can't reach `subscribeToBlocks()` for push-based contract-state watching. Expose either the indexer or a thin `MidnightContract.stateFlow()` over it. | `StatePoller` falls back to 3s polling. |
 
 Promote items to the friction log once they hit a real user-visible bug.
 

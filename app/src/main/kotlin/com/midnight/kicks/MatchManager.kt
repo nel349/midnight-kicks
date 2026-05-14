@@ -2,16 +2,23 @@ package com.midnight.kicks
 
 import android.content.Context
 import android.util.Log
-import com.midnight.kuira.core.compact.ContractCallStage
 import com.midnight.kuira.core.compact.MidnightContract
 import com.midnight.kuira.core.compact.WitnessResult
 import com.midnight.kuira.core.network.MidnightNetwork
 import com.midnight.kuira.sdk.MidnightSdk
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.math.BigInteger
 import java.security.SecureRandom
 
 /**
@@ -44,20 +51,51 @@ import java.security.SecureRandom
 class MatchManager(
     private val context: Context,
     private val network: MidnightNetwork,
-    private val seed: ByteArray,
+    seed: ByteArray,
 ) {
+    // Take the seed by value into a local-only field so we can wipe it from
+    // both the caller's reference and our own at close() time.
+    private var seed: ByteArray? = seed.copyOf()
+
     private val _state = MutableStateFlow<MatchState>(MatchState.Idle)
     /** Observable state for UI / BlockStore / StatePoller. */
     val state: StateFlow<MatchState> = _state.asStateFlow()
 
+    /**
+     * Latest known on-chain contract state, or null before deploy / between
+     * polls. Driven by [StatePoller] started in [deployMatch]. UI / debug
+     * panels can observe; orchestrator does NOT yet read this (next commit
+     * replaces the hardcoded settle delays with poll-driven waits).
+     */
+    private val _contractState = MutableStateFlow<ContractStateSnapshot?>(null)
+    val contractState: StateFlow<ContractStateSnapshot?> = _contractState.asStateFlow()
+
     private var sdk: MidnightSdk? = null
 
+    /** Single accessor that asserts SDK is initialized — avoids `sdk!!` everywhere. */
+    private val requireSdk: MidnightSdk
+        get() = requireNotNull(sdk) { "SDK not initialized — call initSdk first" }
+
+    /**
+     * Scope owning the poll-loop coroutine. SupervisorJob so a poller crash
+     * doesn't kill anything else; IO dispatcher so the queryState network
+     * round-trips don't block the orchestrator's thread.
+     */
+    private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var pollerJob: Job? = null
+
+    /**
+     * Single reused SecureRandom — instantiating per call may re-seed from
+     * /dev/urandom and burn entropy / CPU on the hot path.
+     */
+    private val random = SecureRandom()
+
     // P1 (local human) identity
-    private val p1SecretKey = ByteArray(SECRET_KEY_BYTES).also { SecureRandom().nextBytes(it) }
+    private val p1SecretKey = ByteArray(SECRET_KEY_BYTES).also { random.nextBytes(it) }
 
     // P2 identity. Today this is an on-device AI; tomorrow it's the friend
     // on the other phone (their key, not stored here at all).
-    private val p2SecretKey = ByteArray(SECRET_KEY_BYTES).also { SecureRandom().nextBytes(it) }
+    private val p2SecretKey = ByteArray(SECRET_KEY_BYTES).also { random.nextBytes(it) }
 
     // Choices + nonces are captured at commit time and reused at reveal.
     private var p1Choices: IntArray? = null
@@ -71,17 +109,22 @@ class MatchManager(
 
     // ── Setup ──────────────────────────────────────────────────────────
 
-    suspend fun initSdk() {
+    suspend fun initSdk() = withContext(Dispatchers.IO) {
         require(state.value is MatchState.Idle) { "initSdk requires Idle, got ${state.value}" }
         setState(MatchState.InitializingSdk)
 
         installProvingKeys()
-        sdk = MidnightSdk.Builder(context)
+        val builtSdk = MidnightSdk.Builder(context)
             .network(network)
-            .seed(seed)
+            .seed(requireNotNull(seed) { "seed already wiped" })
             .build()
-        Log.i(TAG, "SDK initialized, wallet: ${sdk!!.walletAddress}")
-        Log.i(TAG, "Wallet keys installed: ${sdk!!.provingKeyManager.hasWalletKeys()}")
+        sdk = builtSdk
+        Log.i(TAG, "SDK initialized, wallet: ${builtSdk.walletAddress}")
+        Log.i(TAG, "Wallet keys installed: ${builtSdk.provingKeyManager.hasWalletKeys()}")
+
+        // Seed has been copied into the SDK by build(); wipe our local copy.
+        seed?.fill(0)
+        seed = null
 
         setState(MatchState.SdkReady)
     }
@@ -89,139 +132,110 @@ class MatchManager(
     // ── Transition steps (one per circuit / logical action) ─────────────
 
     /** P1 deploys a fresh contract. Transitions [SdkReady] → [Deployed]. */
-    suspend fun deployMatch(): String = transition(MatchState.Deploying) {
+    suspend fun deployMatch(): String = transitionFrom<MatchState.SdkReady, String>(
+        inProgress = { MatchState.Deploying },
+        onSuccess = { _, address -> MatchState.Deployed(address) },
+    ) {
         val verifierKeys = loadVerifierKeys()
         val contract = createContractHandle(p1SecretKey, address = null, verifierKeys = verifierKeys)
-        val result = contract.deploy { stage -> Log.d(TAG, "deploy: ${stage.javaClass.simpleName}") }
-        Log.i(TAG, "Match at: ${result.contractAddress}")
+        val deploy = contract.deploy { stage -> Log.d(TAG, "deploy: ${stage.javaClass.simpleName}") }
+        Log.i(TAG, "Match at: ${deploy.contractAddress}")
 
         // Indexer needs a beat to ingest the deploy block, and the deploy
         // consumed a dust UTXO so we need to refresh the wallet's view.
         delay(INDEXER_SETTLE_MS)
-        sdk!!.wallet.forceResyncDust()
+        requireSdk.wallet.forceResyncDust()
 
-        setState(MatchState.Deployed(result.contractAddress))
-        result.contractAddress
+        // NOTE: StatePoller is NOT started here. The poller calls
+        // ContractRuntime.stateCreate/stateReadFields/stateFree on the IO
+        // dispatcher, and those FFI calls race with the orchestrator's
+        // own balance / submit pipeline on the main coroutine — which
+        // surfaced as error 170 ("Invalid Transaction") on subsequent
+        // circuit submissions. Until the SDK exposes reentrant-safe
+        // contract-state reads (PLAN.md wishlist #10), the poller only
+        // runs when the orchestrator is in a wait state (a future
+        // waitForP2Committed/Revealed helper will start it and stop it
+        // around the actual wait window). PvAI has no real wait windows.
+
+        deploy.contractAddress
     }
 
     /** P2 (AI today) joins the match. Transitions [Deployed] → [Joined]. */
-    suspend fun aiJoin() {
-        val prev = state.value
-        require(prev is MatchState.Deployed) { "aiJoin requires Deployed, got $prev" }
-        setState(MatchState.JoiningAsP2(prev.address))
-
-        // Retry loop: the indexer may not yet see the freshly-deployed
-        // contract. Backs off across 10 attempts before giving up.
-        try {
-            val deadline = java.math.BigInteger.valueOf(
-                System.currentTimeMillis() / 1000 + COMMIT_DEADLINE_DURATION_SECS
-            )
-            var joined = false
-            for (attempt in 1..JOIN_RETRY_LIMIT) {
-                delay(JOIN_RETRY_DELAY_MS)
-                try {
-                    callCircuit(p2SecretKey, prev.address, "joinMatch", arrayOf(deadline))
-                    joined = true
-                    break
-                } catch (e: Exception) {
-                    if (e.message?.contains("not found") == true && attempt < JOIN_RETRY_LIMIT) {
-                        Log.w(TAG, "Indexer not ready (attempt $attempt), retrying")
-                        continue
-                    }
-                    throw e
-                }
-            }
-            if (!joined) error("Failed to join after $JOIN_RETRY_LIMIT attempts")
-            setState(MatchState.Joined(prev.address))
-        } catch (e: Exception) {
-            setState(MatchState.Failed(prev, e)); throw e
+    suspend fun aiJoin() = transitionFrom<MatchState.Deployed, Unit>(
+        inProgress = { MatchState.JoiningAsP2(it.address) },
+        onSuccess = { prev, _ -> MatchState.Joined(prev.address) },
+    ) { prev ->
+        val deadline = BigInteger.valueOf(
+            System.currentTimeMillis() / 1000 + COMMIT_DEADLINE_DURATION_SECS
+        )
+        retryUntilIndexerReady(JOIN_RETRY_LIMIT, JOIN_RETRY_DELAY_MS) {
+            callCircuit(p2SecretKey, prev.address, "joinMatch", arrayOf(deadline))
         }
     }
 
     /** P1 commits their five choices. Transitions [Joined] → [P1Committed]. */
     suspend fun submitP1Choices(choices: IntArray) {
-        require(choices.size == 5) { "Need 5 choices" }
-        val prev = state.value
-        require(prev is MatchState.Joined) { "submitP1Choices requires Joined, got $prev" }
-        setState(MatchState.P1Committing(prev.address))
-
-        try {
+        require(choices.size == ROUNDS_PER_BATCH) { "Need $ROUNDS_PER_BATCH choices" }
+        transitionFrom<MatchState.Joined, Unit>(
+            inProgress = { MatchState.P1Committing(it.address) },
+            onSuccess = { prev, _ -> MatchState.P1Committed(prev.address) },
+        ) { prev ->
             delay(POST_JOIN_SETTLE_MS) // join must finalize before next tx
-            sdk!!.wallet.forceResyncDust()
+            requireSdk.wallet.forceResyncDust()
 
-            val nonce = ByteArray(NONCE_BYTES).also { SecureRandom().nextBytes(it) }
+            val nonce = ByteArray(NONCE_BYTES).also { random.nextBytes(it) }
             commitChoices(p1SecretKey, prev.address, choices, nonce)
             p1Choices = choices.copyOf()
             p1Nonce = nonce
-
-            setState(MatchState.P1Committed(prev.address))
-        } catch (e: Exception) {
-            setState(MatchState.Failed(prev, e)); throw e
         }
     }
 
     /** P2 commits their five choices. Transitions [P1Committed] → [BothCommitted]. */
     suspend fun submitP2Choices(choices: IntArray) {
-        require(choices.size == 5) { "Need 5 choices" }
-        val prev = state.value
-        require(prev is MatchState.P1Committed) { "submitP2Choices requires P1Committed, got $prev" }
-        setState(MatchState.P2Committing(prev.address))
-
-        try {
+        require(choices.size == ROUNDS_PER_BATCH) { "Need $ROUNDS_PER_BATCH choices" }
+        transitionFrom<MatchState.P1Committed, Unit>(
+            inProgress = { MatchState.P2Committing(it.address) },
+            onSuccess = { prev, _ -> MatchState.BothCommitted(prev.address) },
+        ) { prev ->
             delay(INTER_TX_SETTLE_MS)
-            sdk!!.wallet.forceResyncDust()
+            requireSdk.wallet.forceResyncDust()
 
-            val nonce = ByteArray(NONCE_BYTES).also { SecureRandom().nextBytes(it) }
+            val nonce = ByteArray(NONCE_BYTES).also { random.nextBytes(it) }
             commitChoices(p2SecretKey, prev.address, choices, nonce)
             p2Choices = choices.copyOf()
             p2Nonce = nonce
-
-            setState(MatchState.BothCommitted(prev.address))
-        } catch (e: Exception) {
-            setState(MatchState.Failed(prev, e)); throw e
         }
     }
 
     /** P1 reveals their choices. Transitions [BothCommitted] → [P1Revealed]. */
-    suspend fun revealP1() {
-        val prev = state.value
-        require(prev is MatchState.BothCommitted) { "revealP1 requires BothCommitted, got $prev" }
+    suspend fun revealP1() = transitionFrom<MatchState.BothCommitted, Unit>(
+        inProgress = { MatchState.P1Revealing(it.address) },
+        onSuccess = { prev, _ -> MatchState.P1Revealed(prev.address) },
+    ) { prev ->
         val choices = requireNotNull(p1Choices) { "No P1 choices captured" }
         val nonce = requireNotNull(p1Nonce) { "No P1 nonce captured" }
-        setState(MatchState.P1Revealing(prev.address))
-
-        try {
-            delay(INTER_TX_SETTLE_MS)
-            sdk!!.wallet.forceResyncDust()
-            revealChoices(p1SecretKey, prev.address, choices, nonce)
-            setState(MatchState.P1Revealed(prev.address))
-        } catch (e: Exception) {
-            setState(MatchState.Failed(prev, e)); throw e
-        }
+        delay(INTER_TX_SETTLE_MS)
+        requireSdk.wallet.forceResyncDust()
+        revealChoices(p1SecretKey, prev.address, choices, nonce)
     }
 
     /**
      * P2 reveals. The contract auto-resolves when the second reveal lands.
      * Transitions [P1Revealed] → [Resolved].
      */
-    suspend fun revealP2() {
-        val prev = state.value
-        require(prev is MatchState.P1Revealed) { "revealP2 requires P1Revealed, got $prev" }
+    suspend fun revealP2(): MatchResult = transitionFrom<MatchState.P1Revealed, MatchResult>(
+        inProgress = { MatchState.P2Revealing(it.address) },
+        onSuccess = { _, result -> MatchState.Resolved(result) },
+    ) { prev ->
         val p1c = requireNotNull(p1Choices) { "No P1 choices captured" }
         val p2c = requireNotNull(p2Choices) { "No P2 choices captured" }
         val p2n = requireNotNull(p2Nonce) { "No P2 nonce captured" }
-        setState(MatchState.P2Revealing(prev.address))
+        delay(INTER_TX_SETTLE_MS)
+        requireSdk.wallet.forceResyncDust()
+        revealChoices(p2SecretKey, prev.address, p2c, p2n)
 
-        try {
-            delay(INTER_TX_SETTLE_MS)
-            sdk!!.wallet.forceResyncDust()
-            revealChoices(p2SecretKey, prev.address, p2c, p2n)
-
-            val result = MatchResult(playerChoices = p1c, aiChoices = p2c, contractAddress = prev.address)
-            lastResult = result
-            setState(MatchState.Resolved(result))
-        } catch (e: Exception) {
-            setState(MatchState.Failed(prev, e)); throw e
+        MatchResult(playerChoices = p1c, aiChoices = p2c, contractAddress = prev.address).also {
+            lastResult = it
         }
     }
 
@@ -239,7 +253,7 @@ class MatchManager(
      */
     suspend fun playAgainstAi(playerChoices: IntArray): MatchResult {
         val aiChoices = generateAiChoices()
-        Log.i(TAG, "AI choices: ${aiChoices.map { dirLabel(it) }}")
+        Log.i(TAG, "AI choices: ${aiChoices.map(::dirLabel)}")
 
         if (state.value is MatchState.Idle) initSdk()
         deployMatch()
@@ -247,39 +261,79 @@ class MatchManager(
         submitP1Choices(playerChoices)
         submitP2Choices(aiChoices)
         revealP1()
-        revealP2()
-        return requireNotNull(lastResult) { "Reveal completed but lastResult is null" }
+        return revealP2()
     }
 
     fun close() {
+        managerScope.cancel()  // stops StatePoller and any in-flight observers
+        pollerJob = null
         sdk?.close()
         sdk = null
         p1SecretKey.fill(0)
         p2SecretKey.fill(0)
         p1Nonce?.fill(0)
         p2Nonce?.fill(0)
+        seed?.fill(0)
+        seed = null
     }
 
     // ── Internal helpers ────────────────────────────────────────────────
 
     /** Generate AI choices locally. Each round is independent [0..2]. */
     private fun generateAiChoices(): IntArray =
-        IntArray(5) { SecureRandom().nextInt(3) }
+        IntArray(ROUNDS_PER_BATCH) { random.nextInt(DIRECTION_COUNT) }
 
     private fun dirLabel(d: Int): String = when (d) { 0 -> "L"; 1 -> "C"; 2 -> "R"; else -> "?" }
 
     /**
-     * Convenience for transitions that have a simple in-progress → done
-     * shape and need to capture the previous state for [Failed].
+     * Run [block] up to [attempts] times, swallowing exceptions whose
+     * message mentions "not found" (the indexer hasn't seen the deploy
+     * yet). Any other exception, or running out of attempts, propagates.
+     *
+     * Lives here because the "deploy → indexer eventual consistency"
+     * pattern is universal across Kuira dApps and the SDK doesn't yet
+     * provide a built-in retry policy (see PLAN.md wishlist #3).
      */
-    private suspend fun <T> transition(
-        inProgress: MatchState,
-        block: suspend () -> T,
+    private suspend fun retryUntilIndexerReady(
+        attempts: Int,
+        delayMs: Long,
+        block: suspend () -> Unit,
+    ) {
+        repeat(attempts) { i ->
+            delay(delayMs)
+            try {
+                block()
+                return
+            } catch (e: Exception) {
+                val notFound = e.message?.contains("not found") == true
+                val canRetry = notFound && i < attempts - 1
+                if (!canRetry) throw e
+                Log.w(TAG, "Indexer not ready (attempt ${i + 1}/$attempts), retrying")
+            }
+        }
+        error("Failed after $attempts attempts")
+    }
+
+    /**
+     * Canonical state-machine transition. Asserts current state matches
+     * [P], publishes [inProgress], runs [block], then publishes
+     * [onSuccess] (or Failed if block throws). All state assignments in
+     * this class route through here.
+     */
+    private suspend inline fun <reified P : MatchState, T> transitionFrom(
+        crossinline inProgress: (P) -> MatchState,
+        crossinline onSuccess: (P, T) -> MatchState,
+        crossinline block: suspend (P) -> T,
     ): T {
         val prev = state.value
-        setState(inProgress)
+        require(prev is P) {
+            "expected ${P::class.simpleName}, got ${prev::class.simpleName}"
+        }
+        setState(inProgress(prev))
         return try {
-            block()
+            val result = block(prev)
+            setState(onSuccess(prev, result))
+            result
         } catch (e: Exception) {
             setState(MatchState.Failed(prev, e))
             throw e
@@ -289,7 +343,6 @@ class MatchManager(
     /**
      * Centralised state setter — logs the transition (essential for
      * debugging "is the state machine even running?") and updates the flow.
-     * Every other state assignment in this file routes through here.
      */
     private fun setState(newState: MatchState) {
         val prev = _state.value
@@ -297,6 +350,14 @@ class MatchManager(
         // Log both the class (for grep / cheap pattern matching) and the
         // human label (so the log doubles as a script of what the user sees).
         Log.i(TAG, "state: ${prev::class.simpleName} → ${newState::class.simpleName}  «${newState.label}»")
+    }
+
+    private fun startStatePoller(address: String) {
+        pollerJob?.cancel()
+        val poller = StatePoller(requireSdk.config, address)
+        pollerJob = managerScope.launch {
+            poller.snapshots().collect { _contractState.value = it }
+        }
     }
 
     // ── Circuit invocations ─────────────────────────────────────────────
@@ -338,7 +399,7 @@ class MatchManager(
         nonce: ByteArray? = null,
         verifierKeys: Map<String, ByteArray>? = null,
     ): MidnightContract {
-        val midnightSdk = requireNotNull(sdk) { "SDK not initialized — call initSdk first" }
+        val midnightSdk = requireSdk
         val dummyNonce = ByteArray(NONCE_BYTES)
 
         return MidnightContract.create(midnightSdk.config) {
@@ -350,11 +411,11 @@ class MatchManager(
             // returned bytes after consumption (CircuitExecutor#registerWitnesses),
             // so callers' original arrays must not be exposed by reference.
             witness("localSecretKey") { WitnessResult(null, secretKey.copyOf()) }
-            witness("localChoice0") { WitnessResult(null, byteArrayOf((choices?.get(0) ?: 0).toByte())) }
-            witness("localChoice1") { WitnessResult(null, byteArrayOf((choices?.get(1) ?: 0).toByte())) }
-            witness("localChoice2") { WitnessResult(null, byteArrayOf((choices?.get(2) ?: 0).toByte())) }
-            witness("localChoice3") { WitnessResult(null, byteArrayOf((choices?.get(3) ?: 0).toByte())) }
-            witness("localChoice4") { WitnessResult(null, byteArrayOf((choices?.get(4) ?: 0).toByte())) }
+            repeat(ROUNDS_PER_BATCH) { i ->
+                witness("localChoice$i") {
+                    WitnessResult(null, byteArrayOf((choices?.getOrElse(i) { 0 } ?: 0).toByte()))
+                }
+            }
             witness("localNonce") { WitnessResult(null, (nonce ?: dummyNonce).copyOf()) }
 
             initialPrivateState = mapOf("secretKey" to secretKey.copyOf())
@@ -418,6 +479,13 @@ class MatchManager(
 
     companion object {
         private const val TAG = "MatchManager"
+
+        // Game rules
+        /** Choices per commit-reveal batch. The compact contract has this baked in. */
+        const val ROUNDS_PER_BATCH = 5
+        /** L=0, C=1, R=2 — the three penalty directions. */
+        const val DIRECTION_COUNT = 3
+
         private const val COMMIT_DEADLINE_DURATION_SECS = 300L
         private const val SECRET_KEY_BYTES = 32
         private const val NONCE_BYTES = 32
@@ -450,7 +518,7 @@ data class MatchResult(
 ) {
     /** Build round results for Unity replay. */
     fun toRoundResults(): List<RoundResult> {
-        return (0 until 5).map { i ->
+        return (0 until MatchManager.ROUNDS_PER_BATCH).map { i ->
             val isPlayerShooting = i % 2 == 0
             val shootDir = if (isPlayerShooting) playerChoices[i] else aiChoices[i]
             val keepDir = if (isPlayerShooting) aiChoices[i] else playerChoices[i]
