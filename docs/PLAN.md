@@ -87,15 +87,15 @@ Separate repo: `midnight-kicks/` (app/ + unity/ + contract/). Consumes Kuira SDK
   - [x] Contract deployment API (each match = new contract)
   - [x] Passkey identity (CredentialManager + did:key + keyAuthorization) — verified on emulator
   - [x] PRF-encrypted cloud backup — verified on emulator (same-session round-trip, cross-device needs physical device)
-- [ ] **Phase 3 — Unity + Kotlin integration**
+- [x] **Phase 3 — Unity + Kotlin integration** (complete 2026-05-14)
   - [x] kick-prototype with ball physics + 3 directions (URP, IL2CPP, arm64)
   - [x] UaaL export script (ExportAndroidLibrary.cs, batch mode CLI)
   - [x] Separate Gradle project (AGP 9.0.0, independent from Kuira build)
   - [x] GameController.cs — JSON bridge, 5-round choice UI, replay stub
   - [x] UnityBridge.kt — Kotlin↔Unity JSON messaging
   - [x] KicksActivity — main menu + deep link handler
-  - [ ] GameController receiving choicePhase + sending choicesLocked (end-to-end)
-  - [ ] Replay system (5 rounds from JSON) + stadium intro cinematic
+  - [x] GameController receiving choicePhase + sending choicesLocked (end-to-end) — verified by 2026-05-13 logcat round-trip: Kotlin sends `choicePhase` → Unity renders 5-round picker → Unity sends `choicesLocked` → Kotlin advances match
+  - [x] Replay system (5 rounds from JSON) + stadium intro cinematic — `ShotManager.PlayReplay` runs a 2.2s intro dolly (`IntroStartCam` → `EstablishingCam` + "GET READY..."), then per-round push-in to `ActionCam` peaking at ball strike, shooter run-up + kick + keeper dive + ball flight + procedural reaction (celebration hops / defeat lean), scoreboard + per-round feedback, final result hold, `replayComplete` back to Kotlin. Sudden-death replays use the same path.
   - [x] MatchManager — deploy/join/commit/reveal/claim circuit calls (state-machine refactor 2026-05-12: discrete suspend transitions, `StateFlow<MatchState>` as source of truth, `KicksActivity` is now a thin presenter over the SDK)
   - [x] StatePoller — watch opponent actions via indexer (2026-05-13: 3s poll on `MidnightConfig.queryState`, parses `penalty.compact` ledger via verified cell indices, exposed on `MatchManager.contractState: StateFlow`)
   - [x] PvP wait helpers — `MatchManager.waitForP2Committed()` / `waitForP2Revealed()` spin up the StatePoller only for the wait window (not continuously), then transition the state machine when chain state matches; `waitForP2Revealed` also reads `p2Choices` from the snapshot to build the final `MatchResult` (we never see the friend's choices locally in PvP). Unblocks Phase 4.
