@@ -52,6 +52,10 @@ class KicksActivity : FragmentActivity() {
 
     private val statusMessage = mutableStateOf<String?>(null)
     private val lastChoices = mutableStateOf<String?>(null)
+    // Top-level nav. State-based so we don't need Navigation-Compose for
+    // three screens. handleDeepLink() / button onClicks mutate this; the
+    // setContent { } block switches on it.
+    private val screen = mutableStateOf<KicksScreen>(KicksScreen.Menu)
     private var matchManager: MatchManager? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,18 +69,66 @@ class KicksActivity : FragmentActivity() {
         handleDeepLink(intent)
 
         setContent {
-            KicksApp(
-                statusMessage = statusMessage.value,
-                lastChoices = lastChoices.value,
-                onCreateMatch = { launchUnityChoicePhase() },
-                onJoinMatch = { /* TODO */ },
-            )
+            when (val s = screen.value) {
+                KicksScreen.Menu -> KicksApp(
+                    statusMessage = statusMessage.value,
+                    lastChoices = lastChoices.value,
+                    onCreateMatch = ::startCreateMatch,
+                    onJoinMatch = { screen.value = KicksScreen.Joining() },
+                    onPracticeVsAi = { launchUnityChoicePhase() },
+                )
+                is KicksScreen.Creating -> CreateMatchScreen(
+                    address = s.address,
+                    onBack = { screen.value = KicksScreen.Menu },
+                )
+                is KicksScreen.Joining -> JoinMatchScreen(
+                    prefilledAddress = s.prefilledAddress,
+                    onBack = { screen.value = KicksScreen.Menu },
+                    onJoin = ::startJoinMatch,
+                )
+            }
         }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleDeepLink(intent)
+    }
+
+    /**
+     * P1 entry point. Switches to [KicksScreen.Creating] in the deploying
+     * state, then asynchronously deploys the penalty contract and updates
+     * the screen with the resulting address. Wait-for-opponent + Unity
+     * handoff is Phase 4 step 2.
+     */
+    private fun startCreateMatch() {
+        screen.value = KicksScreen.Creating(address = null)
+        ensureSdkReady {
+            lifecycleScope.launch {
+                try {
+                    val manager = matchManager ?: return@launch
+                    val address = manager.deployMatch()
+                    Log.i(TAG, "Deployed match: $address")
+                    screen.value = KicksScreen.Creating(address = address)
+                } catch (e: Exception) {
+                    Log.e(TAG, "deployMatch failed", e)
+                    statusMessage.value = "Deploy failed: ${e.message}"
+                    screen.value = KicksScreen.Menu
+                }
+            }
+        }
+    }
+
+    /**
+     * P2 entry point. Phase 4 step 2 will plumb this into
+     * `MatchManager.joinAsP2(address)` and transition into the Unity
+     * choice phase on success. For now we log + bounce back to the menu
+     * so the matchmaking nav can be tested in isolation.
+     */
+    private fun startJoinMatch(address: String) {
+        Log.i(TAG, "Join requested for address: $address")
+        statusMessage.value = "Join not wired yet — Phase 4 step 2 (chain logic)"
+        screen.value = KicksScreen.Menu
     }
 
     override fun onDestroy() {
@@ -233,6 +285,12 @@ class KicksActivity : FragmentActivity() {
         statusMessage.value = "$winText  ($p1 - $p2)"
     }
 
+    /**
+     * Deep link handler — `midnight://kicks?match=<address>` routes the
+     * user straight into [JoinMatchScreen] with the address prefilled.
+     * Called from both `onCreate` (cold start via tap) and `onNewIntent`
+     * (warm hit when the activity is already foreground).
+     */
     private fun handleDeepLink(intent: Intent?) {
         val uri = intent?.data ?: return
         if (uri.scheme == "midnight" && uri.host == "kicks") {
@@ -240,6 +298,7 @@ class KicksActivity : FragmentActivity() {
             val network = uri.getQueryParameter("network") ?: "undeployed"
             if (matchAddress != null) {
                 Log.i(TAG, "Deep link: match=$matchAddress, network=$network")
+                screen.value = KicksScreen.Joining(prefilledAddress = matchAddress)
             }
         }
     }
@@ -265,6 +324,7 @@ fun KicksApp(
     lastChoices: String?,
     onCreateMatch: () -> Unit,
     onJoinMatch: () -> Unit,
+    onPracticeVsAi: () -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -299,6 +359,20 @@ fun KicksApp(
                 MenuButton("CREATE MATCH", onClick = onCreateMatch)
                 Spacer(modifier = Modifier.height(16.dp))
                 MenuButton("JOIN MATCH", onClick = onJoinMatch)
+                Spacer(modifier = Modifier.height(28.dp))
+                // Dev affordance — kept accessible while Phase 4 PvP
+                // chain logic is being plumbed. Drop it (or hide behind
+                // a long-press / debug build) once two-emulator E2E is
+                // wired through CREATE / JOIN.
+                Text(
+                    "PRACTICE VS AI",
+                    color = Color.White.copy(alpha = 0.3f),
+                    fontSize = 11.sp,
+                    letterSpacing = 3.sp,
+                    modifier = Modifier
+                        .clickable(onClick = onPracticeVsAi)
+                        .padding(8.dp),
+                )
 
                 if (statusMessage != null || lastChoices != null) {
                     Spacer(modifier = Modifier.height(48.dp))
