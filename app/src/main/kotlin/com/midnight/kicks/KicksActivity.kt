@@ -165,9 +165,17 @@ class KicksActivity : FragmentActivity() {
     /**
      * One-shot chain probe wired to the CHECK STATUS button. Short timeout
      * (it's a tap, not a background wait), so the user gets quick feedback
-     * either way. If `matchJoined` is true, we route to [MatchReady];
-     * otherwise we surface a "still waiting" line and the user can tap
-     * again later.
+     * either way. `awaitOpponentJoin` is non-terminal on timeout — state
+     * stays on [Deployed] so the user can tap again. If `matchJoined` is
+     * true we route to [MatchReady].
+     *
+     * Same-process gotcha: if the user killed the app entirely after
+     * deploy, [MatchManager] was destroyed and the secrets it generated
+     * are gone, so this device can no longer act as P1 on the persisted
+     * match. We detect this case (state is [Idle] but a session is on
+     * disk) and surface a clear message — the proper fix is encrypted
+     * key persistence (Block Store + sigil-style PRF), which is the same
+     * Phase 4 follow-up as cross-device session sync.
      */
     private fun checkCreateStatus() {
         val s = screen.value as? KicksScreen.Creating ?: return
@@ -177,6 +185,16 @@ class KicksActivity : FragmentActivity() {
         lifecycleScope.launch {
             try {
                 val manager = matchManager ?: return@launch
+                // Cross-process resume isn't supported yet — see the
+                // KDoc on this method. Detect and explain rather than
+                // erroring opaquely from awaitOpponentJoin's precondition.
+                if (manager.state.value !is MatchState.Deployed &&
+                    manager.state.value !is MatchState.Joined
+                ) {
+                    creatingStatus.value =
+                        "Match keys lost on app kill — re-deploy to play. (Cross-process resume coming.)"
+                    return@launch
+                }
                 manager.awaitOpponentJoin(timeoutMs = CHECK_STATUS_TIMEOUT_MS)
                 Log.i(TAG, "Opponent joined: $address")
                 screen.value = KicksScreen.MatchReady(address, Player.P1)

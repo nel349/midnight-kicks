@@ -195,20 +195,28 @@ class MatchManager(
 
     /**
      * P1 (create-side) waits for the opponent's [joinAsP2] transaction to
-     * land on chain. Transitions [Deployed] → [Joined] when chain state
-     * reports `matchJoined`.
+     * land on chain. On success transitions [Deployed] → [Joined].
      *
-     * The state poller is started lazily by [awaitContractState] and torn
-     * down when this returns — no background polling outside the wait.
+     * **Timeout is non-terminal** — if no opponent has joined within
+     * [timeoutMs], the state stays on [Deployed] and a
+     * [kotlinx.coroutines.TimeoutCancellationException] is thrown. This
+     * lets the CHECK STATUS button in [CreateMatchScreen] poll repeatedly
+     * without putting the state machine into [Failed]. Use a long
+     * [timeoutMs] (>= [DEFAULT_OPPONENT_WAIT_MS]) for the "block until
+     * opponent shows up" semantic, or a short value for a one-shot probe.
+     *
+     * Not implemented via [transitionFrom] because that helper treats every
+     * exception as a fatal transition — wrong shape for repeated polling.
      */
     suspend fun awaitOpponentJoin(
         timeoutMs: Long = DEFAULT_OPPONENT_WAIT_MS,
-    ) = transitionFrom<MatchState.Deployed, Unit>(
-        inProgress = { it },  // stay on Deployed; the label drives UX
-        onSuccess = { prev, _ -> MatchState.Joined(prev.address) },
     ) {
+        val current = state.value
+        require(current is MatchState.Deployed) {
+            "awaitOpponentJoin: expected Deployed, got ${current::class.simpleName}"
+        }
         awaitContractState(timeoutMs) { it.matchJoined }
-        Unit
+        setState(MatchState.Joined(current.address))
     }
 
     /** P1 commits their five choices. Transitions [Joined] → [P1Committed]. */
