@@ -56,7 +56,14 @@ class KicksActivity : FragmentActivity() {
     // three screens. handleDeepLink() / button onClicks mutate this; the
     // setContent { } block switches on it.
     private val screen = mutableStateOf<KicksScreen>(KicksScreen.Menu)
+    // Per-screen UX state for the create-and-go flow.
+    private val creatingChecking = mutableStateOf(false)
+    private val creatingStatus = mutableStateOf<String?>(null)
+    // True if KicksSessionStore has an active match — surfaces the
+    // RESUME MATCH affordance on the menu.
+    private val hasActiveSession = mutableStateOf(false)
     private var matchManager: MatchManager? = null
+    private val sessionStore by lazy { KicksSessionStore(applicationContext) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,6 +73,11 @@ class KicksActivity : FragmentActivity() {
             runOnUiThread { handleUnityMessage(json) }
         }
 
+        // Surface RESUME MATCH if a previous session is on disk. Independent
+        // from any deep-link handling: even a cold launch with no intent
+        // data should show the resume affordance if a session exists.
+        hasActiveSession.value = sessionStore.load() != null
+
         handleDeepLink(intent)
 
         setContent {
@@ -73,13 +85,18 @@ class KicksActivity : FragmentActivity() {
                 KicksScreen.Menu -> KicksApp(
                     statusMessage = statusMessage.value,
                     lastChoices = lastChoices.value,
+                    hasActiveSession = hasActiveSession.value,
                     onCreateMatch = ::startCreateMatch,
                     onJoinMatch = { screen.value = KicksScreen.Joining() },
+                    onResumeMatch = ::resumeMatch,
                     onPracticeVsAi = { launchUnityChoicePhase() },
                 )
                 is KicksScreen.Creating -> CreateMatchScreen(
                     address = s.address,
+                    checking = creatingChecking.value,
+                    statusMessage = creatingStatus.value,
                     onBack = { screen.value = KicksScreen.Menu },
+                    onCheckStatus = ::checkCreateStatus,
                 )
                 is KicksScreen.Joining -> JoinMatchScreen(
                     prefilledAddress = s.prefilledAddress,
@@ -107,32 +124,35 @@ class KicksActivity : FragmentActivity() {
     }
 
     /**
-     * P1 entry point. Deploys a fresh penalty contract, then waits in the
-     * background for the opponent's `joinMatch` transaction to land on
-     * chain. While deploying, [CreateMatchScreen] shows a spinner. Once
-     * the address is known the screen renders the QR + COPY for sharing,
-     * and a state-poller-backed wait fires. On opponent join we transition
-     * to [KicksScreen.MatchReady]; the next tap will hand off to Unity
-     * (orchestrator coming in step 3).
+     * P1 entry point — "create and go". Deploys a fresh penalty contract,
+     * persists the session ([KicksSessionStore]) so it survives process
+     * death, and renders the QR + COPY screen. **Does not block waiting
+     * for the opponent** — matchmaking is async by nature, and pinning a
+     * coroutine to this Activity's lifecycle would kill the wait the
+     * moment the user backgrounds the app.
      *
-     * Errors at any stage drop the user back to the menu with a status
-     * line — `awaitOpponentJoin` can also time out (`DEFAULT_OPPONENT_WAIT_MS`).
+     * The user shares the link, leaves the app, comes back via RESUME
+     * MATCH or by tapping the launcher icon (the screen will be
+     * re-rendered from the persisted session at that point). When ready,
+     * they tap CHECK STATUS to one-shot poll the chain and advance to
+     * [KicksScreen.MatchReady] if the opponent has joined.
      */
     private fun startCreateMatch() {
         screen.value = KicksScreen.Creating(address = null)
+        creatingStatus.value = null
         ensureSdkReady {
             lifecycleScope.launch {
                 try {
                     val manager = matchManager ?: return@launch
                     val address = manager.deployMatch()
                     Log.i(TAG, "Deployed match: $address")
+                    val deadline = System.currentTimeMillis() / 1000 +
+                        COMMIT_DEADLINE_DURATION_SECS
+                    sessionStore.save(
+                        MatchSession(address = address, role = Player.P1, deadline = deadline)
+                    )
+                    hasActiveSession.value = true
                     screen.value = KicksScreen.Creating(address = address)
-
-                    // Wait for opponent's join — StatePoller is launched
-                    // inside awaitOpponentJoin and torn down on return.
-                    manager.awaitOpponentJoin()
-                    Log.i(TAG, "Opponent joined: $address")
-                    screen.value = KicksScreen.MatchReady(address, Player.P1)
                 } catch (e: Exception) {
                     Log.e(TAG, "Create-match flow failed", e)
                     statusMessage.value = "Create failed: ${e.message}"
@@ -140,6 +160,61 @@ class KicksActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * One-shot chain probe wired to the CHECK STATUS button. Short timeout
+     * (it's a tap, not a background wait), so the user gets quick feedback
+     * either way. If `matchJoined` is true, we route to [MatchReady];
+     * otherwise we surface a "still waiting" line and the user can tap
+     * again later.
+     */
+    private fun checkCreateStatus() {
+        val s = screen.value as? KicksScreen.Creating ?: return
+        val address = s.address ?: return
+        creatingChecking.value = true
+        creatingStatus.value = null
+        lifecycleScope.launch {
+            try {
+                val manager = matchManager ?: return@launch
+                manager.awaitOpponentJoin(timeoutMs = CHECK_STATUS_TIMEOUT_MS)
+                Log.i(TAG, "Opponent joined: $address")
+                screen.value = KicksScreen.MatchReady(address, Player.P1)
+            } catch (e: Exception) {
+                Log.i(TAG, "Opponent not yet joined: ${e.message}")
+                creatingStatus.value = "Still waiting — tap again in a moment."
+            } finally {
+                creatingChecking.value = false
+            }
+        }
+    }
+
+    /**
+     * Resume the most recent persisted session. Reopens the right screen
+     * based on [MatchSession.role]:
+     *  - P1 → [KicksScreen.Creating] with the saved address; user can tap
+     *    CHECK STATUS to see if the opponent has joined
+     *  - P2 → [KicksScreen.Joining] with the address prefilled (in case
+     *    the user backed out before tapping JOIN MATCH the first time)
+     *
+     * If the session is post-Joined (we're already past matchmaking), a
+     * follow-up could check chain state here and jump straight to
+     * [KicksScreen.MatchReady] or into gameplay. Today we just rehydrate
+     * the matchmaking view.
+     */
+    private fun resumeMatch() {
+        val session = sessionStore.load() ?: run {
+            hasActiveSession.value = false
+            return
+        }
+        Log.i(TAG, "Resuming session: address=${session.address.take(20)}… role=${session.role}")
+        screen.value = when (session.role) {
+            Player.P1 -> KicksScreen.Creating(address = session.address)
+            Player.P2 -> KicksScreen.Joining(prefilledAddress = session.address)
+        }
+        // Make sure the SDK is bootstrapped so CHECK STATUS / JOIN can
+        // make chain calls without an additional cold-start delay.
+        ensureSdkReady { }
     }
 
     /**
@@ -160,6 +235,15 @@ class KicksActivity : FragmentActivity() {
                     val manager = matchManager ?: return@launch
                     manager.joinAsP2(address)
                     Log.i(TAG, "Joined as P2: $address")
+                    // Persist as P2 so the user can back out and resume.
+                    // Deadline is informational only on the join side —
+                    // P1 set the on-chain deadline at deploy time.
+                    val deadline = System.currentTimeMillis() / 1000 +
+                        COMMIT_DEADLINE_DURATION_SECS
+                    sessionStore.save(
+                        MatchSession(address = address, role = Player.P2, deadline = deadline)
+                    )
+                    hasActiveSession.value = true
                     screen.value = KicksScreen.MatchReady(address, Player.P2)
                 } catch (e: Exception) {
                     Log.e(TAG, "joinAsP2 failed", e)
@@ -347,6 +431,25 @@ class KicksActivity : FragmentActivity() {
 
         /** How long to wait for UnityPlayerGameActivity to come up before sending the first bridge message. */
         private const val UNITY_BOOT_DELAY_MS = 2_000L
+
+        /**
+         * Stored alongside the persisted [MatchSession] so the resume UI
+         * can tell the user how much time is left on chain. Should match
+         * `MatchManager.COMMIT_DEADLINE_DURATION_SECS`; duplicated here
+         * because that value is `private` to MatchManager and exposing
+         * it just for this caller isn't worth the API churn.
+         */
+        private const val COMMIT_DEADLINE_DURATION_SECS = 300L
+
+        /**
+         * One-shot "is opponent here yet?" probe. Short enough that a
+         * tap on CHECK STATUS feels responsive even when the opponent
+         * hasn't joined — the user doesn't want to stare at a spinner
+         * during their own create-and-go flow. The chain poll inside
+         * `awaitContractState` runs at 3s ticks, so 4s gives one real
+         * shot at finding the joinMatch tx.
+         */
+        private const val CHECK_STATUS_TIMEOUT_MS = 4_000L
     }
 }
 
@@ -361,8 +464,10 @@ private fun directionLabel(d: Int): String = when (d) {
 fun KicksApp(
     statusMessage: String?,
     lastChoices: String?,
+    hasActiveSession: Boolean,
     onCreateMatch: () -> Unit,
     onJoinMatch: () -> Unit,
+    onResumeMatch: () -> Unit,
     onPracticeVsAi: () -> Unit,
 ) {
     Surface(
@@ -395,6 +500,10 @@ fun KicksApp(
 
                 Spacer(modifier = Modifier.height(64.dp))
 
+                if (hasActiveSession) {
+                    MenuButton("RESUME MATCH", onClick = onResumeMatch)
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
                 MenuButton("CREATE MATCH", onClick = onCreateMatch)
                 Spacer(modifier = Modifier.height(16.dp))
                 MenuButton("JOIN MATCH", onClick = onJoinMatch)

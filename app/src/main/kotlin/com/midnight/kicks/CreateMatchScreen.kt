@@ -48,7 +48,10 @@ import com.midnight.example.common.wallet.QrCode
 @Composable
 fun CreateMatchScreen(
     address: String?,
+    checking: Boolean = false,
+    statusMessage: String? = null,
     onBack: () -> Unit,
+    onCheckStatus: () -> Unit = {},
 ) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
@@ -123,22 +126,50 @@ fun CreateMatchScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(56.dp))
+                Spacer(modifier = Modifier.height(40.dp))
 
-                // Waiting state — Phase 4 step 2 swaps this for a real
-                // chain-state observer that advances into Unity once the
-                // opponent's joinMatch tx finalizes.
-                CircularProgressIndicator(
-                    color = Color.White.copy(alpha = 0.4f),
-                    strokeWidth = 1.5.dp,
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    "Waiting for opponent to join…",
-                    color = Color.White.copy(alpha = 0.5f),
-                    fontSize = 12.sp,
-                    letterSpacing = 2.sp,
-                )
+                // Create-and-go pattern: the user shares the link, the
+                // opponent joins on their own timeline, and the user comes
+                // back to tap CHECK STATUS to see if it's their turn yet.
+                // No background coroutine pinned to this Activity's
+                // lifecycle — the session is persisted via
+                // [KicksSessionStore] so the user can fully leave the app.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .background(
+                            Color.White.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        .let { if (!checking) it.clickable(onClick = onCheckStatus) else it },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (checking) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.height(24.dp),
+                        )
+                    } else {
+                        Text(
+                            "CHECK STATUS",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            letterSpacing = 4.sp,
+                        )
+                    }
+                }
+
+                if (statusMessage != null) {
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Text(
+                        statusMessage,
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 12.sp,
+                        letterSpacing = 2.sp,
+                    )
+                }
             }
         }
     }
