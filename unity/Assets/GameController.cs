@@ -46,7 +46,10 @@ public class GameController : MonoBehaviour
     private bool inChoicePhase = false;
     private bool waitingForMessage = true;
     private string currentRound = "regulation";
-    private string playerRole = "shooter";
+    // Per-round role from this device's perspective. Indexed by
+    // currentChoice (0..4). Defaults to all "shoot" until the first
+    // choicePhase message arrives.
+    private string[] roundRoles = new string[] { "shoot", "shoot", "shoot", "shoot", "shoot" };
 
     // Replay state
     private bool inReplay = false;
@@ -94,14 +97,22 @@ public class GameController : MonoBehaviour
     {
         var msg = JsonUtility.FromJson<ChoicePhaseMessage>(json);
         currentRound = msg.round;
-        playerRole = msg.playerRole;
+        if (msg.roles != null && msg.roles.Length == 5)
+        {
+            roundRoles = msg.roles;
+        }
+        else
+        {
+            Debug.LogWarning($"[GameController] choicePhase missing/invalid roles array — defaulting to all-shoot");
+            roundRoles = new string[] { "shoot", "shoot", "shoot", "shoot", "shoot" };
+        }
         currentChoice = 0;
         choices = new int[5];
         inChoicePhase = true;
         waitingForMessage = false;
         inReplay = false;
 
-        Debug.Log($"[GameController] Choice phase: round={currentRound}, role={playerRole}");
+        Debug.Log($"[GameController] Choice phase: round={currentRound}, roles=[{string.Join(",", roundRoles)}]");
     }
 
     void OnGUI()
@@ -140,9 +151,27 @@ public class GameController : MonoBehaviour
         labelStyle.alignment = TextAnchor.MiddleCenter;
         labelStyle.normal.textColor = Color.white;
         GUI.Label(
-            new Rect(Screen.width / 2 - 150, y - 80, 300, 40),
-            $"Round {currentChoice + 1} / 5  ({playerRole})",
+            new Rect(Screen.width / 2 - 150, y - 110, 300, 30),
+            $"Round {currentChoice + 1} / 5",
             labelStyle
+        );
+
+        // Per-round role banner. Shoot rounds are about offense
+        // (kick where keeper isn't); keep rounds are about defense
+        // (dive where shooter aims). The contract uses the same
+        // committed direction for both — but the player can think
+        // about each pick in the right frame.
+        var roleStyle = new GUIStyle(GUI.skin.label);
+        roleStyle.fontSize = 28;
+        roleStyle.fontStyle = FontStyle.Bold;
+        roleStyle.alignment = TextAnchor.MiddleCenter;
+        string currentRole = (currentChoice < roundRoles.Length) ? roundRoles[currentChoice] : "shoot";
+        bool isShoot = currentRole == "shoot";
+        roleStyle.normal.textColor = isShoot ? new Color(0.55f, 1f, 0.48f) : new Color(1f, 0.7f, 0.3f);
+        GUI.Label(
+            new Rect(Screen.width / 2 - 200, y - 70, 400, 50),
+            isShoot ? "YOU SHOOT — pick where to kick" : "YOU KEEP — pick where to dive",
+            roleStyle
         );
 
         if (GUI.Button(new Rect(Screen.width / 2 - btnWidth * 1.5f, y, btnWidth, btnHeight), "LEFT"))
@@ -336,7 +365,13 @@ public class ChoicePhaseMessage
 {
     public string type;
     public string round;
-    public string playerRole;
+    /// <summary>
+    /// Per-round role from THIS device's perspective. 5 entries, each
+    /// "shoot" or "keep". Kotlin computes it from the player's P1/P2
+    /// role + the contract's `i % 2 == 0 → P1 shoots` rule. Unity uses
+    /// `roles[currentChoice]` to label each pick "YOU SHOOT" / "YOU KEEP".
+    /// </summary>
+    public string[] roles;
 }
 
 [System.Serializable]

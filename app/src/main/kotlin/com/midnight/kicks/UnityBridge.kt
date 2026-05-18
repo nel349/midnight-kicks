@@ -22,12 +22,25 @@ object UnityBridge {
 
     // ── Kotlin → Unity ──
 
-    /** Tell Unity to start the choice phase (player picks 5 directions). */
-    fun sendChoicePhase(round: String, playerRole: String) {
+    /**
+     * Tell Unity to start the choice phase (player picks 5 directions).
+     *
+     * @param round "regulation" or "suddenDeath"
+     * @param roles per-round role from THIS device's perspective. 5 entries,
+     *   each "shoot" or "keep". For PvP-as-P1 this is
+     *   `["shoot","keep","shoot","keep","shoot"]`; for PvP-as-P2 it's
+     *   `["keep","shoot","keep","shoot","keep"]` (alternation flips because
+     *   P1 shoots the odd rounds and P2 shoots the even ones). PvAI uses
+     *   the P1 pattern since the human is always P1 there. Unity labels
+     *   each pick with `YOU SHOOT` / `YOU KEEP` from this array so the
+     *   player can strategize per role.
+     */
+    fun sendChoicePhase(round: String, roles: List<String>) {
+        require(roles.size == 5) { "roles must have 5 entries, got ${roles.size}" }
         val json = JSONObject().apply {
             put("type", "choicePhase")
-            put("round", round) // "regulation" or "suddenDeath"
-            put("playerRole", playerRole) // "shooter" or "keeper"
+            put("round", round)
+            put("roles", JSONArray().apply { roles.forEach { put(it) } })
         }
         sendToUnity("OnMessage", json.toString())
     }

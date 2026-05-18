@@ -346,8 +346,38 @@ class KicksActivity : FragmentActivity() {
             // activity's cancellation scope.
             lifecycleScope.launch {
                 delay(UNITY_BOOT_DELAY_MS)
-                UnityBridge.sendChoicePhase(round = "regulation", playerRole = "shooter")
+                // Per-round role from this device's perspective. The
+                // contract's `i % 2 == 0 → P1 shoots` rule means P1 sees
+                // shoot/keep/shoot/keep/shoot and P2 sees keep/shoot/keep/
+                // shoot/keep. PvAI uses the P1 pattern since the human is
+                // always P1 in that flow. Unity uses this to label each
+                // pick "YOU SHOOT" / "YOU KEEP".
+                val roles = rolesForCurrentDevice()
+                UnityBridge.sendChoicePhase(round = "regulation", roles = roles)
             }
+        }
+    }
+
+    /**
+     * Per-round role array from this device's perspective. Aligns with
+     * `MatchManager.toRoundResults`'s `i % 2 == 0 → P1 shoots` rule.
+     *
+     *  - PvAI (currentRole=null): human is always P1
+     *    → [shoot, keep, shoot, keep, shoot]
+     *  - PvP as P1: same as PvAI
+     *    → [shoot, keep, shoot, keep, shoot]  (P1 shoots rounds 1,3,5)
+     *  - PvP as P2: flipped
+     *    → [keep, shoot, keep, shoot, keep]   (P2 shoots rounds 2,4)
+     *
+     * Centralised here so it stays in lockstep with the contract's role
+     * pattern — change one place, both Kotlin and Unity update.
+     */
+    private fun rolesForCurrentDevice(): List<String> {
+        val p1Pattern = listOf("shoot", "keep", "shoot", "keep", "shoot")
+        val p2Pattern = listOf("keep", "shoot", "keep", "shoot", "keep")
+        return when (currentRole) {
+            null, Player.P1 -> p1Pattern
+            Player.P2 -> p2Pattern
         }
     }
 
