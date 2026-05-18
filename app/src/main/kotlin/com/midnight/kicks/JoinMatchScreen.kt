@@ -77,7 +77,7 @@ fun JoinMatchScreen(
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = {
                     Text(
-                        "mn_addr_undeployed1…",
+                        "64-char hex contract address",
                         color = Color.White.copy(alpha = 0.3f),
                         fontFamily = FontFamily.Monospace,
                         fontSize = 13.sp,
@@ -99,7 +99,11 @@ fun JoinMatchScreen(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            val enabled = !inFlight && address.startsWith("mn_addr_") && address.length > 30
+            // Contract addresses on Midnight are 64-char lowercase hex
+            // (the contract hash). Wallet addresses are bech32m
+            // `mn_addr_…` — different concept; matchmaking uses the
+            // contract address.
+            val enabled = !inFlight && address.matches(CONTRACT_ADDRESS_REGEX)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -148,3 +152,6 @@ fun JoinMatchScreen(
         }
     }
 }
+
+/** 64 hex chars, lowercase. Matches the contract-address output of `MidnightContract.deploy`. */
+private val CONTRACT_ADDRESS_REGEX = Regex("^[0-9a-f]{64}$")
