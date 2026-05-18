@@ -1,7 +1,7 @@
 # Midnight Kicks — Penalty Shootout on Midnight
 
 **Target:** FIFA World Cup 2026 (June 11 - July 19)
-**Updated:** 2026-04-28
+**Updated:** 2026-05-18
 
 ---
 
@@ -21,7 +21,7 @@ Sudden death: **one pairing per batch** (your `shoot` + your `keep`). Decisive w
 
 **Anti-cheat:** commit-reveal. Pedersen commitment of `(shoots[5], keeps[5])` + 32-byte nonce stored as private state. ZK circuit proves revealed values match commitments. Cannot change choices after commit.
 
-> **Status note:** the on-chain contract is currently **V2** (5 dual-purpose directions per player, asymmetric P1=3 shots / P2=2 shots). The above is the **V3 target** spec — see `docs/GAME_DESIGN.md` §2 & §7 migration. V3 contract redeploy is queued as a Phase 4 item.
+> **Status:** V3 is the live spec across contract, Kotlin, and Unity (2026-05-18). The on-chain contract, the Android orchestrator, and the C# choice/replay flow all use the symmetric 10-round model with single-pairing sudden death. Remaining Phase 4 milestone: two-emulator E2E on localnet against the V3 build.
 
 Detailed game logic, state machine, circuit specs, UI flows, and Unity bridge spec in [`GAME_DESIGN.md`](GAME_DESIGN.md). Current Unity work and asset checklist in [`../ROADMAP.md`](../ROADMAP.md).
 
@@ -106,10 +106,13 @@ Separate repo: `midnight-kicks/` (app/ + unity/ + contract/). Consumes Kuira SDK
   - [x] **Matchmaking — UI scaffolding** — `CreateMatchScreen` (deploy → QR + COPY), `JoinMatchScreen` (paste/prefill + JOIN), state-based nav in `KicksActivity`, `handleDeepLink` populates `JoinMatchScreen` from `midnight://kicks?match=…`.
   - [x] **Matchmaking — chain logic** — `MatchManager.joinAsP2(address)`, `awaitOpponentJoin()`. Plumbed into both screens.
   - [x] **Create-and-go session** — no blocking auto-await on creator's device. Session persisted via `KicksSessionStore` (SharedPrefs), `RESUME MATCH` on menu, `CHECK STATUS` on `CreateMatchScreen` runs a short non-terminal probe. Cross-process resume needs encrypted key persistence (next).
-  - [x] **PvP gameplay orchestrators** — `MatchManager.playAsP1` / `playAsP2`, P2-side `waitForP1Committed` / `waitForP1Revealed` (captures P1's choices from chain snapshot). `KicksActivity.handleChoicesLocked` dispatches by role.
-  - [ ] Two-emulator E2E on localnet — create on emulator A, deep-link from emulator B via `adb shell am start -a android.intent.action.VIEW -d "midnight://kicks?match=<addr>"`. Ready to test.
+  - [x] **PvP gameplay orchestrators** — `MatchManager.playAsP1` / `playAsP2`, P2-side `waitForP1Committed` / `waitForP1Revealed` (captures P1's shoots/keeps from chain snapshot). `KicksActivity.handleChoicesLocked` dispatches by role.
+  - [x] **Contract V3 — symmetric 10-round shootout** (shipped 2026-05-17/18): each player commits `shoots[5]` + `keeps[5]` in a single regulation batch; sudden death is single-pairing per round (each player commits one `{shoot, keep}`) until decisive. Asymmetric V2 model dropped. Spec in `docs/GAME_DESIGN.md` §2; migration notes in §7. Touched contract + Kotlin + Unity:
+    - Contract — `penalty.compact` V3 + 37 tests (commits `7370c7f`).
+    - Kotlin — `MatchManager` V3 witnesses (`localShoots`/`localKeeps` as `Vector<5, Uint<8>>`, `localSdShoot`/`localSdKeep`), 4 phase-specific circuits (`commit/revealRegulation`, `commit/revealSuddenDeath`), 8 new `MatchState` SD variants, `MatchResult` with `p1Shoots/p1Keeps/p2Shoots/p2Keeps` + `sdRounds: List<SdRoundData>`, `ContractStateSnapshot` rewritten for the 23-cell two-group V3 layout incl. Vector decoding. `app/build.gradle.kts` now auto-syncs compiled contract artifacts to assets via `syncContractAssets` before `mergeAssets` (commit `f3d66e4`).
+    - Unity — `GameController` handles dynamic-length roles arrays (10 for regulation, 2 for SD), `ShotManager.PlayReplay` already iterates `rounds.Count` so 10 regulation + N SD pairings replay without further code change. Re-exported 2026-05-18 (commits `fa7d355` C# + Kotlin 10-pick gathering, `80160bb` SD UI handoff via `getSdPicks` callback, `d322b1b` doc, `2b86272` dead V2 SD-replay path removed).
+  - [ ] Two-emulator E2E on localnet (V3) — create on emulator A, deep-link from emulator B via `adb shell am start -a android.intent.action.VIEW -d "midnight://kicks?match=<addr>"`. Unity has been re-exported with V3 C#; ready to test end-to-end including SD UI handoff.
   - [ ] **Cross-process resume** — encrypted persistence of per-match secret keys + choices/nonces so resume survives app kill. Shares the data shape with Block Store cross-device sync; doing them together makes sense. (PLAN.md SDK connector wishlist #4.)
-  - [ ] **Contract V3** — real penalty rules: each player commits `shoots[5]` + `keeps[5]` (10 directions total, 5 kicks per player, 5 saves each). 10-round regulation, single-pairing SD. Asymmetric V2 model (P1 gets 3 shots vs P2 gets 2) gets dropped. See `docs/GAME_DESIGN.md` §2 V3 model + §7 migration. Contract redeploy required.
   - [ ] Results screen + leaderboard query
 - [ ] **Phase 5 — Polish + release**
   - [ ] APK size audit (< 100MB), proof latency tuning
@@ -172,9 +175,9 @@ Promote items to the friction log once they hit a real user-visible bug.
 
 | Decision | Choice | Why |
 |----------|--------|-----|
-| Batch vs per-round | Batch commit, 1 tx per phase | V2: 5 dual-purpose choices. V3 target: `shoots[5]` + `keeps[5]` in one commit. Either way 2 txs per regulation (commit + reveal) vs 20+ for per-round. Cinematic replay. |
+| Batch vs per-round | Batch commit, 1 tx per phase | V3 packs `shoots[5]` + `keeps[5]` into one regulation commit; sudden death batches a single `{shoot, keep}` pair per round. 2 txs per regulation (commit + reveal) and 2 per SD round, vs 20+ for fully per-round. Cinematic replay relies on the bundled list. |
 | Symmetric vs asymmetric roles | V3 = symmetric (each player shoots 5 + keeps 5) | V2 was asymmetric (P1: 3 shots, P2: 2 shots) — doesn't match real penalty rules. V3 redesign aligns with real-life shootouts and lets players strategize offense and defense independently. |
-| Sudden death | Batches of 5, stop at decisive | Unrevealed rounds private. No infinite loops. |
+| Sudden death | Single-pairing per round; SD round increments until exactly one player scores | Mirrors real shootouts (one pair at a time after regulation draw). Unrevealed pairings stay private (ZK). No infinite loops in practice — random play converges, equal-skill play is bounded by player patience. |
 | Unity vs Compose | Unity (UaaL) | 3D stadium, ball physics, cameras. |
 | Standalone repo | Separate from Kuira | Tests SDK boundaries. Separate release. |
 | Pairing | QR + deep links (built in Kicks) | Simpler than connector transports. |
