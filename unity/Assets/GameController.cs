@@ -391,10 +391,13 @@ public class ChoicePhaseMessage
     public string type;
     public string round;
     /// <summary>
-    /// Per-round role from THIS device's perspective. 5 entries, each
-    /// "shoot" or "keep". Kotlin computes it from the player's P1/P2
-    /// role + the contract's `i % 2 == 0 → P1 shoots` rule. Unity uses
-    /// `roles[currentChoice]` to label each pick "YOU SHOOT" / "YOU KEEP".
+    /// Per-round role from THIS device's perspective, each entry
+    /// "shoot" or "keep". Length is set by Kotlin and tells Unity how
+    /// many picks to gather: 10 for V3 regulation (5 shoots + 5 keeps
+    /// interleaved by the contract's i % 2 == 0 → P1 shoots rule), 2
+    /// for sudden death (1 shoot + 1 keep). Unity uses
+    /// `roles[currentChoice]` to label each pick "YOU SHOOT" / "YOU
+    /// KEEP" and sizes its `choices` buffer from this array.
     /// </summary>
     public string[] roles;
 }
