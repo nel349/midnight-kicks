@@ -36,9 +36,9 @@ Last updated by writer of this README. Source of truth lives in PLAN and ROADMAP
 **Project milestones (from `docs/PLAN.md`):**
 - ✅ Phase 1 — Compact contract (penalty.compact V2, 27 tests, deployed)
 - ✅ Phase 2 — Midnight Android SDK (validated 2026-04-28)
-- 🔄 Phase 3 — Unity + Kotlin integration (end-to-end flow finalizes on localnet; replay animations land)
-- ⏳ Phase 4 — Full two-player game (onboarding, matchmaking, two-emulator E2E)
-- ⏳ Phase 5 — Polish + release
+- ✅ Phase 3 — Unity + Kotlin integration (replay system, MatchManager, StatePoller, PvP wait helpers)
+- 🔄 Phase 4 — Full two-player game (matchmaking UI + chain logic + per-role PvP orchestrators landed; two-emulator E2E + results screen / leaderboard pending; cross-process resume pending encrypted-key persistence)
+- ⏳ Phase 5 — Polish + release (Unity in separate process, uGUI choice phase + per-role visual design, QR scanner)
 - ⏳ Phase 6 — Launch
 
 **Unity asset roadmap (from `ROADMAP.md`):**
@@ -58,7 +58,8 @@ midnight-kicks/
 ├── ROADMAP.md               ← Unity visible-work checklist
 ├── docs/
 │   ├── PLAN.md              ← project journal + progress
-│   └── GAME_DESIGN.md       ← spec
+│   ├── GAME_DESIGN.md       ← spec
+│   └── VISUAL_ROADMAP.md    ← FC25-tier visual polish plan
 ├── app/                     ← Kotlin Android app (game logic, SDK consumer)
 ├── unity/                   ← Unity project (3D stadium, replay, choice UI)
 ├── unityLibrary/            ← Exported UaaL artifact (generated, gitignored where appropriate)

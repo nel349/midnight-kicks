@@ -90,6 +90,32 @@ Contract implementation: [`../contract/src/penalty.compact`](../contract/src/pen
 
 Any value > 2 is rejected by `validDirection()` check in circuit.
 
+### Coordinate convention
+
+**Directions are always from the SHOOTER's perspective.** Reference:
+`unity/Assets/Keeper.cs:105` — the `direction` arg into `Keeper.Dive`
+expects `0=left, 2=right` "from the shooter's perspective." The keeper
+faces the shooter (mirrored), so `Dive(0)` plays `DiveRight` animation
+even though the direction value is "left" — same physical spot, just
+opposite-handed body lean.
+
+This matters for the choice UI: when a keeper taps LEFT during the
+commit phase, the underlying value committed is `0` (shooter's left),
+not "the keeper's left." Without explicit framing, this is confusing —
+see §4 *Per-role choice UI* for the open design question and ticket.
+
+### Shoot-vs-keep role per round
+
+The contract alternates shooter/keeper roles by index: `i % 2 == 0` → P1
+shoots, otherwise P2 shoots. In a 5-round batch P1 shoots 3 times
+(rounds 1, 3, 5), P2 shoots 2 times (rounds 2, 4). Sudden death uses
+the same alternation per batch.
+
+**Each player commits ONE direction per round** — the same committed
+value is interpreted as the shoot direction or the dive direction
+depending on whose turn it is to shoot. Players don't commit separate
+"offense" and "defense" arrays.
+
 ### Commitment
 
 ```
@@ -155,55 +181,127 @@ If all 5 SD rounds are non-decisive → back to `SD_COMMITTING` for another batc
 
 ## 4. Screen flow (IA)
 
+State-based navigation via `KicksScreen` (sealed class in
+`app/.../KicksScreen.kt`). No `Navigation-Compose` dep; `KicksActivity`
+holds a `mutableStateOf<KicksScreen>` and renders the matching
+Composable.
+
 ```
-[Splash] → [Home]
-              │
-              ├─ Create Match → [Waiting for Opponent] → [Choice Phase]
-              │                   (shows QR + share link)
-              │
-              ├─ Join Match → [Choice Phase]
-              │   (scan QR or deep link)
-              │
-              └─ Leaderboard → [Rankings]
+[Menu]
+  │  ┌────────────────────────────────────────────────────────┐
+  │  │ Buttons (top-to-bottom):                                │
+  │  │   RESUME MATCH   ← only if KicksSessionStore has a row  │
+  │  │   CREATE MATCH                                          │
+  │  │   JOIN MATCH                                            │
+  │  │   PRACTICE VS AI ← dev affordance, PvAI legacy path     │
+  │  └────────────────────────────────────────────────────────┘
+  │
+  ├─ CREATE MATCH ────► [Creating(address=null)]
+  │                       ↓ MatchManager.deployMatch()
+  │                       ↓ KicksSessionStore.save({addr, P1, deadline})
+  │                     [Creating(address=<hex64>)]
+  │                       • QR encodes "midnight://kicks?match=<addr>"
+  │                       • COPY button → clipboard
+  │                       • CHECK STATUS → MatchManager.awaitOpponentJoin(4s)
+  │                         · success → [MatchReady(addr, P1)]
+  │                         · timeout → "Still waiting — tap again"
+  │                         · the state machine stays Deployed; timeout
+  │                           is non-terminal so the user can keep
+  │                           polling
+  │
+  ├─ JOIN MATCH ─────► [Joining(prefilledAddress=null)]
+  │                       • Text field accepts 64-char hex contract addr
+  │                       • JOIN MATCH enabled when regex matches
+  │                       ↓ MatchManager.joinAsP2(address)
+  │                       ↓ KicksSessionStore.save({addr, P2, deadline})
+  │                     [MatchReady(addr, P2)]
+  │
+  ├─ midnight://kicks?match=<addr> (deep link from QR or share)
+  │                  ─► [Joining(prefilledAddress=addr, "↑ filled from deep link")]
+  │                       (same as JOIN MATCH from here)
+  │
+  ├─ RESUME MATCH ──► reopen by role:
+  │                     P1 → [Creating(address=session.address)]
+  │                     P2 → [Joining(prefilledAddress=session.address)]
+  │
+  └─ PRACTICE VS AI ─► launches Unity choice phase with currentRole=null
+                        → MatchManager.playAgainstAi(choices) end-to-end
+                        → replay (single device)
 
-[Choice Phase]
-  Pick 5 directions (L/C/R per round)
-  "Lock in" → commit tx → [Waiting for Opponent]
+[MatchReady(address, role)]
+  ✓ BOTH PLAYERS IN — You are P1 / P2
+  • CONTINUE → launchUnityChoicePhase() with currentRole=role
+  • BACK → [Menu]
 
-[Waiting for Opponent]
-  Opponent committed? → [Stadium Intro]
-  Timeout? → [Forfeit Win]
+[Unity Choice Phase] (UnityPlayerGameActivity, separate Activity)
+  • Per-round role banner: "YOU SHOOT" or "YOU KEEP" (see §2 coordinate
+    convention — both pick L/C/R in shooter-perspective space)
+  • L/C/R buttons commit a direction per round
+  • 5 picks → choicesLocked back to Kotlin
 
-[Stadium Intro]
-  Flyover + crowd buildup (masks proof + reveal tx time)
-  Prove + reveal in background
-  Both revealed? → [Match Replay]
+KicksActivity.handleChoicesLocked dispatches by currentRole:
+  null     → MatchManager.playAgainstAi(choices)  ── PvAI single-device
+  Player.P1 → MatchManager.playAsP1(choices)       ── submit, await P2 commit,
+                                                       reveal, await P2 reveal
+  Player.P2 → MatchManager.playAsP2(choices)       ── await P1 commit, submit,
+                                                       await P1 reveal, reveal
 
-[Match Replay]
-  Unity cinematic: 5 rounds played sequentially
-  Each round: ball flight → GOAL! or SAVE!
-  Running score overlay
-  After round 5:
-    Clear winner → [Result Screen]
-    Tied → [Sudden Death Choice Phase]
+On result:
+  • sessionStore.clear() if PvP (RESUME MATCH disappears from menu)
+  • UnityBridge.sendReplay(rounds, p1Score, p2Score, winner) → Unity
+    cinematic
+  • Unity sends replayComplete → KicksActivity shows score line
 
-[Sudden Death Choice Phase]
-  Same as Choice Phase but labeled "SUDDEN DEATH"
-  After reveal → replay only decisive rounds
-
-[Result Screen]
-  Winner announcement + final score
-  "Claim winnings" → payout tx
-  "Play again" → back to Home
-
-[Forfeit Win]
-  "Opponent didn't respond"
-  "Claim winnings" → payout tx
+[Forfeit / Timeout]
+  • Each MatchManager.waitFor* helper has a timeout default
+    (DEFAULT_OPPONENT_WAIT_MS). On timeout the state machine goes to
+    Failed(prev, e) — user retries or backs out. claimTimeout circuit
+    + payout flow not yet wired in the UI (covered by the contract
+    but not surfaced in the matchmaking screens).
 ```
+
+### What's NOT in the IA yet
+
+- **Pause / mid-match exit** — Unity pause button hard-kills the process
+  (workaround for shared-process ANR); user relaunches from launcher.
+  Proper polish item, see PLAN Phase 5.
+- **Sudden death loop** — contract supports SD; orchestrator hand-off
+  not yet wired into the UI flow. After regulation resolves tied, the
+  state ends at Resolved without auto-routing into SD_COMMITTING.
+- **Result screen + leaderboard** — PLAN Phase 4 step "Results screen +
+  leaderboard query" still pending.
+- **QR scanner** — JoinMatchScreen accepts hex paste / deep link only.
+  Google Code Scanner is PLAN Phase 5 polish.
 
 ### State polling
 
-While waiting for opponent actions, the Kotlin layer polls the contract state via the indexer subscription. When the opponent's committed/revealed flags change → transition to next screen.
+While waiting for opponent actions, the Kotlin layer subscribes to the
+contract state via the indexer (`MatchManager.awaitContractState` →
+`StatePoller`, 3s tick). When the opponent's `committed`/`revealed`
+flags change → the suspending `waitFor*` helper returns and the state
+machine advances. The poller is started lazily inside the wait window
+and torn down on return — no background polling between waits.
+
+### Per-role choice UI — OPEN DESIGN
+
+The coordinate convention (§2) means a keeper tapping "LEFT" commits
+`0` (shooter's left), not "the keeper's left." Today's GUI overlay
+shows a `YOU SHOOT` / `YOU KEEP` banner above L/C/R buttons but
+doesn't visualize the goal or the perspective. Three candidates,
+none picked yet:
+
+1. **Reframe the keep prompt** — banner copy says "predict where they'll
+   kick (left/center/right of goal)" so the player understands they're
+   picking the *target corner*, not their dive direction. Cheap.
+2. **Visual goal diagram** — render a 2D goal image (3 zones, shooter
+   view) above the buttons. Buttons tap zones of the diagram. Same
+   for both roles. One asset + layout work.
+3. **Per-role 3D camera + interaction** — shoot rounds show goal from
+   behind the ball, keep rounds show shooter from inside the goal.
+   Player taps regions of the 3D scene. Substantial Unity work, post-launch.
+
+Locked-in by the design conversation: contract stays in shooter-coord
+space; we change presentation, not semantics.
 
 ---
 
@@ -215,7 +313,15 @@ UaaL renders Unity full-screen as an Android Activity. Communication via `UnityS
 
 ```json
 // Start choice phase
-{ "type": "choicePhase", "round": "regulation", "playerRole": "shooter" }
+// `roles` is the per-round role from THIS device's perspective. Five
+// entries, each "shoot" or "keep". P1 = [shoot, keep, shoot, keep, shoot];
+// P2 = [keep, shoot, keep, shoot, keep]; PvAI = P1 pattern (human is
+// always P1 in PvAI). Unity uses roles[i] to label each pick.
+{
+  "type": "choicePhase",
+  "round": "regulation",
+  "roles": ["shoot", "keep", "shoot", "keep", "shoot"]
+}
 
 // Start replay with results
 {
@@ -255,6 +361,13 @@ UaaL renders Unity full-screen as an Android Activity. Communication via `UnityS
 
 // Replay finished
 { "type": "replayComplete" }
+
+// Pause requested (user tapped the pause HUD button)
+// KicksActivity logs it and updates the menu's status line. Unity
+// immediately follows up with Process.killProcess to bypass Unity's
+// 10s onDestroy hang on the shared OS process (otherwise KicksActivity
+// ANRs while Unity tears down). User relaunches from the launcher.
+{ "type": "matchPaused" }
 ```
 
 ---
