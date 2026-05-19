@@ -153,6 +153,15 @@ class KicksActivity : FragmentActivity() {
                         launchUnityChoicePhase()
                     },
                 )
+                KicksScreen.Resume -> ResumeScreen(
+                    // Read the store on every recomposition so a Backup +
+                    // Restore round-trip that adds matches while the user
+                    // is on this screen surfaces them without a navigate-
+                    // away/back dance.
+                    matches = store.loadAll(),
+                    onBack = { screen.value = KicksScreen.Menu },
+                    onMatchSelected = ::resumeIntoMatch,
+                )
             }
         }
     }
@@ -247,27 +256,44 @@ class KicksActivity : FragmentActivity() {
     }
 
     /**
-     * Resume the most recent persisted session. Reopens the right screen
-     * based on [MatchStore.Match.role]:
+     * Open the resume picker. Multi-match aware: the picker lists every
+     * entry in [MatchStore] (`Player.P1` or `Player.P2`) and the user
+     * taps the one they want to engage with. Single-match users still
+     * tap once — same affordance, no special-cased "auto-route" path
+     * that would have silently picked among multiple matches.
+     *
+     * The picker re-reads the store on every recomposition, so a
+     * Backup-button-then-Restore round-trip (Commit 2) that adds matches
+     * while the picker is up surfaces them without a navigate-away.
+     */
+    private fun resumeMatch() {
+        if (store.loadAll().isEmpty()) {
+            // Defensive — the RESUME button on the menu only renders when
+            // hasActiveSession is true, so this branch shouldn't fire in
+            // practice. Stay on Menu, refresh the flag, and ignore the tap.
+            hasActiveSession.value = false
+            return
+        }
+        screen.value = KicksScreen.Resume
+    }
+
+    /**
+     * Per-match destination router from [KicksScreen.Resume]. Decides
+     * which screen the picked [match] should land on based on its role:
      *  - P1 → [KicksScreen.Creating] with the saved address; user can tap
      *    CHECK STATUS to see if the opponent has joined
      *  - P2 → [KicksScreen.Joining] with the address prefilled (in case
      *    the user backed out before tapping JOIN MATCH the first time)
      *
-     * If the session is post-Joined (we're already past matchmaking), a
-     * follow-up could check chain state here and jump straight to
-     * [KicksScreen.MatchReady] or into gameplay. Today we just rehydrate
-     * the matchmaking view.
+     * Post-matchmaking routing (jump straight to [KicksScreen.MatchReady]
+     * when the chain phase is already past join) is a follow-up — would
+     * need a chain query here, kept out of Commit 3 to avoid blocking
+     * the navigate-into-resume tap on a network round-trip. The
+     * destination screen's existing CHECK STATUS / JOIN button advances
+     * the state machine instead.
      */
-    private fun resumeMatch() {
-        // Single-match resume for now: pick the first entry. Commit 3
-        // adds a Resume UI that lets the user pick among multiple
-        // active matches.
-        val match = store.loadAll().firstOrNull() ?: run {
-            hasActiveSession.value = false
-            return
-        }
-        Log.i(TAG, "Resuming match: address=${match.address.take(20)}… role=${match.role}")
+    private fun resumeIntoMatch(match: MatchStore.Match) {
+        Log.i(TAG, "Resuming into match: address=${match.address.take(20)}… role=${match.role}")
         screen.value = when (match.role) {
             Player.P1 -> KicksScreen.Creating(address = match.address)
             Player.P2 -> KicksScreen.Joining(prefilledAddress = match.address)
