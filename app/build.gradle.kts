@@ -59,6 +59,12 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        // Instrumented tests run via `./gradlew :app:connectedDebugAndroidTest`
+        // against a connected device/emulator. AndroidX's standard JUnit
+        // runner suffices — no Hilt test runner needed because the only
+        // currently-instrumented surface (MatchStore + ResumeScreen)
+        // doesn't depend on the Hilt graph.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             abiFilters.addAll(listOf("arm64-v8a"))
@@ -163,4 +169,27 @@ dependencies {
     // backing). Pinned to the same version core:auth uses.
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test:core:1.6.1")
+
+    // ── Instrumented tests (androidTest) ──
+    //
+    // Run via `./gradlew :app:connectedDebugAndroidTest` against a
+    // connected device/emulator. The current suite covers:
+    //  - MatchStore with REAL EncryptedSharedPreferences + Android
+    //    Keystore (the Robolectric unit tests use plain SharedPrefs;
+    //    this confirms the crypto round-trips on actual hardware).
+    //  - ResumeScreen Compose UI behavior — empty/single/multi row
+    //    rendering + tap routing + back navigation.
+    //
+    // Compose UI tests use `createComposeRule()` (no Activity host
+    // required) so we don't need to stand up Hilt for them.
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    // Compose UI testing — `createComposeRule()`, `onNodeWithText`,
+    // `performClick`, etc. Same Compose BOM as the main classpath.
+    androidTestImplementation(platform("androidx.compose:compose-bom:2026.03.01"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
