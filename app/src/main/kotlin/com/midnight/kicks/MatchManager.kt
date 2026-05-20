@@ -3,6 +3,7 @@ package com.midnight.kicks
 import android.content.Context
 import android.util.Log
 import com.midnight.kuira.core.compact.MidnightContract
+import com.midnight.kuira.core.compact.WitnessKind
 import com.midnight.kuira.core.compact.WitnessResult
 import com.midnight.kuira.core.compact.proving.ProvingKeyManager
 import com.midnight.kuira.core.network.MidnightNetwork
@@ -1366,10 +1367,23 @@ open class MatchManager(
             contractJs = context.assets.open("runtime/penalty-contract.js")
             if (address != null) this.address = address
 
+            // Bytes<32> witnesses — SDK default (BYTES) emits Uint8Array
+            // in JS which the Compact runtime accepts directly.
             witness("localSecretKey") { WitnessResult(null, secretKey.copyOf()) }
             witness("localNonce")     { WitnessResult(null, (nonce ?: dummyNonce).copyOf()) }
-            witness("localShoots")    { WitnessResult(null, packPicks(shoots)) }
-            witness("localKeeps")     { WitnessResult(null, packPicks(keeps)) }
+            // Vector<5, Uint<8>> witnesses — must be VECTOR_OF_UINT8 so
+            // the SDK emits Array<BigInt> in JS instead of Uint8Array.
+            // Without this, the contract's regulation commit fails its
+            // type check with "received {0:…, 1:…, 2:…, 3:…, 4:…}"
+            // (the JSON-stringified Uint8Array shape).
+            witness("localShoots") {
+                WitnessResult(null, packPicks(shoots), WitnessKind.VECTOR_OF_UINT8)
+            }
+            witness("localKeeps") {
+                WitnessResult(null, packPicks(keeps), WitnessKind.VECTOR_OF_UINT8)
+            }
+            // Scalar Uint<8> witnesses — single-byte payload, JS template's
+            // `values.length === 1` branch emits BigInt which matches.
             witness("localSdShoot")   { WitnessResult(null, byteArrayOf((sdShoot ?: 0).toByte())) }
             witness("localSdKeep")    { WitnessResult(null, byteArrayOf((sdKeep  ?: 0).toByte())) }
 
