@@ -212,7 +212,7 @@ private fun Scoreboard(p1Score: Int, p2Score: Int, localRole: Player?) {
             color = Color.White.copy(alpha = 0.3f),
             fontSize = 24.sp,
         )
-        ScoreCell(label = p2Label, score = p2Score, accent = Color(0xFFE57373))
+        ScoreCell(label = p2Label, score = p2Score, accent = KicksColors.Danger)
     }
 }
 

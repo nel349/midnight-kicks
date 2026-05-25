@@ -201,7 +201,7 @@ private fun accentColorFor(mode: MatchHud.Mode): Color = when (mode) {
     MatchHud.Mode.TX_IN_FLIGHT -> Color(0xFF64B5F6)              // light blue
     MatchHud.Mode.WAITING_FOR_OPPONENT -> Color(0xFFFFB74D)      // amber
     MatchHud.Mode.DONE -> Color(0xFF81C784)                      // green
-    MatchHud.Mode.ERROR -> Color(0xFFE57373)                     // red
+    MatchHud.Mode.ERROR -> KicksColors.Danger                    // red
     MatchHud.Mode.IDLE -> Color.Transparent
 }
 

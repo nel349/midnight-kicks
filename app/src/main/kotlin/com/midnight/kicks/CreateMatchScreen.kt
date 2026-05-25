@@ -188,7 +188,7 @@ fun CreateMatchScreen(
                         .fillMaxWidth()
                         .height(48.dp)
                         .background(
-                            if (confirmingCancel) Color(0x33E57373) else Color.Transparent,
+                            if (confirmingCancel) KicksColors.DangerSurface else Color.Transparent,
                             shape = RoundedCornerShape(12.dp),
                         )
                         .let { if (!checking) it.clickable { if (confirmingCancel) onCancel() else confirmingCancel = true } else it }
@@ -197,7 +197,7 @@ fun CreateMatchScreen(
                 ) {
                     Text(
                         if (confirmingCancel) "TAP AGAIN TO CANCEL & REFUND" else "CANCEL MATCH",
-                        color = Color(0xFFE57373),
+                        color = KicksColors.Danger,
                         fontSize = 13.sp,
                         letterSpacing = 3.sp,
                     )
