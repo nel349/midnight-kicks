@@ -477,12 +477,14 @@ class MatchManagerStateMachineTest {
     fun awaitOpponentJoin_rejects_address_less_states() = runBlocking<Unit> {
         // SdkReady has no match — calling awaitOpponentJoin here is a
         // logic bug in the caller and should fail loudly, not silently
-        // succeed. Same for Idle / InitializingSdk.
+        // succeed. Same for Idle / InitializingSdk. The guard throws the
+        // typed NoActiveMatchException (since the 2026-05-20 state-machine
+        // hardening — this assertion was left expecting the old type).
         val mm = TestableMatchManager(context, store)
         mm.initSdk()
         assertEquals(MatchState.SdkReady, mm.state.value)
 
-        assertThrows(IllegalArgumentException::class.java) {
+        assertThrows(NoActiveMatchException::class.java) {
             runBlocking { mm.awaitOpponentJoin(timeoutMs = 50L) }
         }
     }
