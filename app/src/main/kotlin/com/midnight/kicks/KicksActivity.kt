@@ -487,7 +487,18 @@ class KicksActivity : FragmentActivity() {
         val saved = store.load(address)
         val isResume = saved?.role == Player.P2
         Log.i(TAG, "Join requested for address: $address  isResume=$isResume")
-        if (sigilMissing()) return
+        // Deep-link joiners land on JoinMatchScreen, which has NO sigil chip —
+        // so a no-sigil JOIN can't forge in place and the gate would bail
+        // invisibly (the "forge first" status isn't shown there). Route to the
+        // menu, which has the sigil chip + surfaces the status message, so the
+        // user can forge and then re-open the invite to join.
+        if (sigilStateStore.snapshot() == null) {
+            Log.i(TAG, "Join gated on missing sigil — routing to menu to forge")
+            statusMessage.value =
+                "Forge your sigil first (sigil chip, top of the menu), then re-open the invite to join."
+            screen.value = KicksScreen.Menu
+            return
+        }
         screen.value = KicksScreen.Joining(prefilledAddress = address, inFlight = true)
         ensureSdkReady {
             lifecycleScope.launch {
@@ -1210,8 +1221,12 @@ fun KicksApp(
                     if (statusMessage != null) {
                         Text(
                             statusMessage,
-                            color = Color.White.copy(alpha = 0.5f),
+                            // Amber + full opacity. The old 50%-grey buried
+                            // actionable warnings ("forge your sigil first")
+                            // against the near-black background — easy to miss.
+                            color = KicksColors.Warning,
                             fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
                             textAlign = TextAlign.Center,
                         )
                     }
