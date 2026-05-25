@@ -58,5 +58,13 @@
             android:resizeableActivity="true"
             android:screenOrientation="fullUser"
             android:theme="@style/BaseUnityGameActivityTheme" />
+
+        <!-- Cross-process bridge (Approach A): runs in the MAIN process (no
+             android:process). The :unity KicksMatchActivity binds here to
+             exchange Messengers so the Kotlin<->Unity bridge + HUD still flow
+             once Unity is split into its own process. -->
+        <service
+            android:name=".MatchBridgeService"
+            android:exported="false" />
     </application>
 </manifest>
