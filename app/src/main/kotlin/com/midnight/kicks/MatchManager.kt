@@ -2194,6 +2194,61 @@ open class MatchManager(
 
     // ── Circuit invocations ─────────────────────────────────────────────
 
+    // ── Escape hatches — end a stuck match without finishing play ───────
+
+    /**
+     * Claim the pot when the opponent missed the deadline (forfeit).
+     *
+     * The contract's `claimTimeout` only succeeds when (a) the on-chain
+     * deadline has passed and (b) this player did their part and the opponent
+     * didn't — so it can only ever resolve as a win for the caller. A premature
+     * call (deadline not reached) surfaces as a [MatchState.Failed] with the
+     * contract's "Deadline not reached" message, which [toMatchErrorMessage]
+     * renders legibly.
+     */
+    suspend fun claimForfeit() = withContext(Dispatchers.IO) {
+        val prev = _state.value
+        val address = prev.address ?: error("claimForfeit: no active match")
+        val match = store.load(address) ?: error("claimForfeit: no stored match for $address")
+        try {
+            callCircuit(match.secretKey, address, "claimTimeout")
+            setState(MatchState.Resolved(forfeitResult(address, EarlyOutcome.WON_BY_FORFEIT)))
+        } catch (e: Exception) {
+            Log.w(TAG, "claimForfeit failed", e)
+            setState(MatchState.Failed(prev, e))
+        }
+    }
+
+    /**
+     * Creator cancels a match no opponent ever joined and reclaims the stake.
+     *
+     * `cancelMatch` only needs WAITING phase + the creator's key — no deadline
+     * gate — so it's the immediate escape hatch for "I created a match, nobody
+     * joined." Resolves as a refund (the contract sets `isDraw`).
+     */
+    suspend fun cancelMatch() = withContext(Dispatchers.IO) {
+        val prev = _state.value
+        val address = prev.address ?: error("cancelMatch: no active match")
+        val match = store.load(address) ?: error("cancelMatch: no stored match for $address")
+        try {
+            callCircuit(match.secretKey, address, "cancelMatch")
+            setState(MatchState.Resolved(forfeitResult(address, EarlyOutcome.CANCELLED_REFUND)))
+        } catch (e: Exception) {
+            Log.w(TAG, "cancelMatch failed", e)
+            setState(MatchState.Failed(prev, e))
+        }
+    }
+
+    /** A no-play-through result carrying just the early-end outcome + address. */
+    private fun forfeitResult(address: String, outcome: EarlyOutcome) = MatchResult(
+        p1Shoots = IntArray(0),
+        p1Keeps = IntArray(0),
+        p2Shoots = IntArray(0),
+        p2Keeps = IntArray(0),
+        contractAddress = address,
+        endedEarly = outcome,
+    )
+
     private suspend fun callCircuit(
         secretKey: ByteArray,
         address: String,
@@ -2476,6 +2531,9 @@ data class SdRoundData(
  * device is. The renderer maps "this device" → P1 or P2 via the role
  * the orchestrator was launched with.
  */
+/** How a match ended without a normal play-through — see [MatchResult.endedEarly]. */
+enum class EarlyOutcome { WON_BY_FORFEIT, CANCELLED_REFUND }
+
 data class MatchResult(
     val p1Shoots: IntArray,
     val p1Keeps:  IntArray,
@@ -2483,9 +2541,18 @@ data class MatchResult(
     val p2Keeps:  IntArray,
     val sdRounds: List<SdRoundData> = emptyList(),
     val contractAddress: String,
+    /**
+     * Non-null when the match ended without a full play-through — the opponent
+     * forfeited past the deadline (`claimTimeout`), or the creator cancelled an
+     * unjoined match (`cancelMatch`). There are no revealed choices to replay in
+     * that case, so [toRoundResults] returns empty and the UI shows a terminal
+     * message instead of running the cinematic.
+     */
+    val endedEarly: EarlyOutcome? = null,
 ) {
-    /** Build round results for Unity replay. */
+    /** Build round results for Unity replay. Empty for an early-ended match. */
     fun toRoundResults(): List<RoundResult> {
+        if (endedEarly != null) return emptyList()
         val regulation = (0 until MatchManager.REGULATION_ROUNDS).map { i ->
             val kickIdx = i / 2
             val p1Shoots = i % 2 == 0

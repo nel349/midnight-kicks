@@ -160,6 +160,7 @@ class KicksActivity : FragmentActivity() {
                     statusMessage = creatingStatus.value,
                     onBack = { screen.value = KicksScreen.Menu },
                     onCheckStatus = ::checkCreateStatus,
+                    onCancel = ::cancelCreateMatch,
                 )
                 is KicksScreen.Joining -> JoinMatchScreen(
                     prefilledAddress = s.prefilledAddress,
@@ -289,6 +290,32 @@ class KicksActivity : FragmentActivity() {
      * key persistence (Block Store + sigil-style PRF), which is the same
      * Phase 4 follow-up as cross-device session sync.
      */
+    /**
+     * Creator cancels a match no opponent joined and reclaims the stake.
+     * Valid only while still on the create screen (WAITING phase) — once an
+     * opponent joins, [checkCreateStatus] moves the user to MatchReady and the
+     * contract no longer allows cancel. On success, the match is gone (the
+     * manager resolves + clears the store), so we return to the menu.
+     */
+    private fun cancelCreateMatch() {
+        val address = (screen.value as? KicksScreen.Creating)?.address ?: return
+        creatingChecking.value = true
+        creatingStatus.value = null
+        lifecycleScope.launch {
+            try {
+                val manager = matchManager ?: return@launch
+                manager.cancelMatch()
+                Log.i(TAG, "Match cancelled + stake refunded: $address")
+                screen.value = KicksScreen.Menu
+            } catch (e: Exception) {
+                Log.w(TAG, "cancelMatch failed", e)
+                creatingStatus.value = "Couldn't cancel — ${e.message ?: "try again in a moment"}."
+            } finally {
+                creatingChecking.value = false
+            }
+        }
+    }
+
     private fun checkCreateStatus() {
         val s = screen.value as? KicksScreen.Creating ?: return
         val address = s.address ?: return

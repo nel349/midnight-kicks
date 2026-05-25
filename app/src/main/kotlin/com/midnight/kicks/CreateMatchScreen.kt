@@ -52,9 +52,14 @@ fun CreateMatchScreen(
     statusMessage: String? = null,
     onBack: () -> Unit,
     onCheckStatus: () -> Unit = {},
+    onCancel: () -> Unit = {},
 ) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
+    // Cancel is destructive + terminal (refunds the stake, ends the match),
+    // so it's a two-tap confirm rather than a single tap that could fire by
+    // accident while the user is fiddling with the QR / copy.
+    var confirmingCancel by remember { mutableStateOf(false) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0A)) {
         Column(
@@ -168,6 +173,33 @@ fun CreateMatchScreen(
                         color = Color.White.copy(alpha = 0.5f),
                         fontSize = 12.sp,
                         letterSpacing = 2.sp,
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(28.dp))
+
+                // No opponent yet → the creator can cancel and reclaim the
+                // stake (contract `cancelMatch`, valid only in WAITING phase).
+                // Lives here, not in an in-match menu, because this is exactly
+                // where the creator waits for a join — once someone joins, the
+                // flow moves on to MatchReady and cancel is no longer valid.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .background(
+                            if (confirmingCancel) Color(0x33E57373) else Color.Transparent,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        .let { if (!checking) it.clickable { if (confirmingCancel) onCancel() else confirmingCancel = true } else it }
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (confirmingCancel) "TAP AGAIN TO CANCEL & REFUND" else "CANCEL MATCH",
+                        color = Color(0xFFE57373),
+                        fontSize = 13.sp,
+                        letterSpacing = 3.sp,
                     )
                 }
             }

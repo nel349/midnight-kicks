@@ -197,7 +197,11 @@ sealed class MatchState {
             is P1SdRevealing      -> if (isP2) "Opponent revealing SD round $round…" else "Revealing SD round $round…"
             is P1SdRevealed       -> if (isP2) "Opponent revealed SD — your turn (round $round)" else "Your SD pick revealed (round $round)"
             is P2SdRevealing      -> if (isP2) "Revealing SD round $round…" else "Opponent revealing SD round $round…"
-            is Resolved           -> "Match complete!"
+            is Resolved           -> when (result.endedEarly) {
+                EarlyOutcome.WON_BY_FORFEIT -> "You win — opponent didn't respond in time"
+                EarlyOutcome.CANCELLED_REFUND -> "Match cancelled — your stake is refunded"
+                null -> "Match complete!"
+            }
             // Plain-language copy, not the raw exception — see toMatchErrorMessage.
             // The HUD's ERROR mode already supplies the red "something's wrong"
             // visual, so the text just needs to say what + how to recover.
