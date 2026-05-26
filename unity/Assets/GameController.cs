@@ -125,14 +125,18 @@ public class GameController : MonoBehaviour
 
     void OnGUI()
     {
-        // Pause button — top-right corner, renders in every game state
-        // (waiting, choice phase, replay). Tapping it finishes the Unity
-        // activity so the user lands back on KicksActivity where the
-        // wallet + sigil pills live. Match state is not preserved — pause
-        // here is "exit match", documented in the panel adoption design.
-        float pauseSize = 64f;
-        float pauseMargin = 24f;
-        if (GUI.Button(new Rect(Screen.width - pauseSize - pauseMargin, pauseMargin, pauseSize, pauseSize), "II"))
+        // Leave button — top-right corner, renders in every game state
+        // (waiting, choice phase, replay). Tapping it kills the :unity
+        // process so the user lands back on KicksActivity (main process)
+        // where the wallet + sigil pills live. Match state IS preserved:
+        // it lives on chain + in MatchStore, and the menu's RESUME MATCH
+        // re-drives the state machine from there. Labelled "LEAVE" (not the
+        // old "II") so a first-time player knows how to get out — the
+        // earlier pause glyph wasn't legible as an exit.
+        float leaveWidth = 150f;
+        float leaveHeight = 64f;
+        float leaveMargin = 24f;
+        if (GUI.Button(new Rect(Screen.width - leaveWidth - leaveMargin, leaveMargin, leaveWidth, leaveHeight), "LEAVE"))
         {
             RequestPause();
         }
@@ -291,26 +295,26 @@ public class GameController : MonoBehaviour
     // ── Kotlin Communication ──
 
     /// <summary>
-    /// Pause = kill the process. Match state is not preserved — see the
-    /// panel adoption design doc (option A) for the rationale.
+    /// Leave = notify Kotlin, then kill THIS (:unity) process. Match state IS
+    /// preserved: it lives on chain + in MatchStore, and the menu's RESUME
+    /// MATCH re-drives the state machine from there.
     ///
-    /// We kill the whole process instead of calling currentActivity.finish()
-    /// because Unity and KicksActivity share the same OS process, and Unity's
-    /// onDestroy can take 10s+ to tear down on emulators (audio, rendering,
-    /// IL2CPP unload). During that teardown the shared main thread is
-    /// blocked, so any touch on the now-foreground KicksActivity ANRs after
-    /// 5s. Killing the process bypasses the destroy phase entirely.
+    /// Unity now runs in its own ":unity" process (android:process=":unity").
+    /// We still kill rather than currentActivity.finish() because Unity's
+    /// onDestroy takes 10s+ to tear down on emulators (audio, rendering,
+    /// IL2CPP unload) — killing skips that entirely so the user returns to the
+    /// menu instantly. And because it's a *separate* process, the kill can't
+    /// touch the main thread that hosts KicksActivity, so there's no ANR
+    /// (which is the whole reason the process was split out — see docs/PLAN.md).
     ///
-    /// User restarts the game by tapping the Kicks icon from launcher/recents
-    /// (singleTask launch mode → fresh KicksActivity in a clean state).
-    ///
-    /// Phase 5 polish should move Unity to its own process via
-    /// android:process=":unity" so this hard-kill becomes unnecessary, but
-    /// that requires re-plumbing UnityBridge across processes (AIDL/IPC).
+    /// The matchPaused message must go out BEFORE the kill: Kotlin uses it to
+    /// cancel the in-flight orchestrator and clear the dead :unity Messenger
+    /// (KicksActivity.handleMatchPaused). Messenger.send is a oneway binder
+    /// call queued in the kernel, so it survives this process dying.
     /// </summary>
     private void RequestPause()
     {
-        Debug.Log("[GameController] Pause pressed — killing process");
+        Debug.Log("[GameController] Leave pressed — notifying Kotlin, then killing :unity");
         SendToKotlin("{\"type\":\"matchPaused\"}");
 
 #if UNITY_ANDROID && !UNITY_EDITOR

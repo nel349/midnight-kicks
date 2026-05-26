@@ -37,7 +37,9 @@ import com.midnight.kuira.sdk.walletruntime.MidnightSdkProvider
 import com.midnight.kuira.sdk.walletruntime.WalletConfig
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -129,6 +131,17 @@ class KicksActivity : FragmentActivity() {
      * the SD callback; cleared as soon as the deferred completes.
      */
     private var pendingSdPicks: CompletableDeferred<Pair<Int, Int>>? = null
+
+    /**
+     * The in-flight match orchestrator coroutine (regulation play, or a
+     * resume). Tracked so [handleMatchPaused] can cancel it when the user
+     * leaves mid-match — otherwise it keeps polling the indexer / waiting on
+     * the opponent in the background after `:unity` is gone, and a later
+     * RESUME would start a *second* orchestrator racing the first. Cancelling
+     * is safe: chain state is the source of truth and RESUME re-drives the
+     * state machine from it, so there's nothing local worth keeping alive.
+     */
+    private var orchestratorJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -853,17 +866,40 @@ class KicksActivity : FragmentActivity() {
     }
 
     /**
-     * Match paused from the Unity HUD. Unity has already called
-     * `currentActivity.finish()` on its side, so the user is back on this
-     * Activity with the wallet + sigil pills at the top. We just update
-     * the status line so they know what state they're in.
+     * Match paused from the Unity HUD. `:unity` killed itself right after
+     * sending this, so the user is back on this (main-process) Activity with
+     * the wallet + sigil pills at the top. Tear down the local match state and
+     * point them at the right way back in.
      */
     private fun handleMatchPaused() {
         // :unity sent this right before killing itself (GameController), so its
         // inbox is about to become a dead Messenger — drop our reference now
         // rather than waiting for the next relay to hit RemoteException.
         MatchBridge.onUnityGone()
-        statusMessage.value = "Paused — tap CREATE MATCH to start a new match"
+
+        // Stop the in-flight orchestrator. Without this it keeps polling the
+        // indexer / awaiting the opponent in the background, and a later RESUME
+        // would spin up a *second* orchestrator racing this one. Safe to drop:
+        // the match lives on chain + in MatchStore, and RESUME re-drives it.
+        if (orchestratorJob?.isActive == true) {
+            Log.i(TAG, "matchPaused: cancelling in-flight orchestrator")
+        }
+        orchestratorJob?.cancel()
+        orchestratorJob = null
+
+        // Clear the in-match HUD so a stale banner doesn't linger if the user
+        // re-enters via a different path.
+        MatchHud.reset()
+
+        // A paused PvP match is still on disk → RESUME MATCH is the way back.
+        // PvAI leaves nothing resumable. Surface whichever is true so the menu
+        // copy matches the affordance the user actually has.
+        hasActiveSession.value = store.loadAll().isNotEmpty()
+        statusMessage.value = if (hasActiveSession.value) {
+            "Match paused — tap RESUME MATCH to pick up where you left off"
+        } else {
+            "Match paused"
+        }
     }
 
     private fun handleChoicesLocked(json: JSONObject) {
@@ -887,7 +923,7 @@ class KicksActivity : FragmentActivity() {
 
         // No progress callback needed — `manager.state` is already bound
         // to statusMessage via the state collector in ensureSdkReady().
-        lifecycleScope.launch {
+        orchestratorJob = lifecycleScope.launch {
             // Guard against a race where Unity returns choicesLocked
             // before ensureSdkReady has finished assigning matchManager.
             val manager = matchManager ?: run {
@@ -941,6 +977,11 @@ class KicksActivity : FragmentActivity() {
                     Player.P2 -> manager.playAsP2(shoots, keeps, getSdPicks = ::gatherSdPicksFromUi)
                 }
                 handleMatchResult(result, deviceLabels = labels)
+            } catch (e: CancellationException) {
+                // Deliberate: the user paused out (handleMatchPaused cancelled
+                // us). Don't surface it as a failure — rethrow so structured
+                // concurrency unwinds cleanly.
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Match failed", e)
                 statusMessage.value = "Match failed: ${e.message}"
@@ -1030,7 +1071,7 @@ class KicksActivity : FragmentActivity() {
             val intent = Intent(this@KicksActivity, KicksMatchActivity::class.java)
             startActivity(intent)
 
-            lifecycleScope.launch {
+            orchestratorJob = lifecycleScope.launch {
                 // The role array must be set BEFORE any SD pick comes
                 // back — handleSdChoicesLocked reads it to bucket the
                 // returned picks. Same value the live path computes.
@@ -1071,6 +1112,10 @@ class KicksActivity : FragmentActivity() {
                 } catch (e: NoActiveMatchException) {
                     Log.w(TAG, "resumeOrchestrator: no active match — ${e.message}")
                     statusMessage.value = "No match to resume — tap CREATE on the menu."
+                } catch (e: CancellationException) {
+                    // Deliberate pause-out — see handleMatchPaused. Rethrow so
+                    // it isn't reported as "Resume failed".
+                    throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "Resume orchestrator failed", e)
                     statusMessage.value = "Resume failed: ${e.message}"
