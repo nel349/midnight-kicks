@@ -1,6 +1,9 @@
 package com.midnight.kicks
 
 import android.util.Log
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -19,6 +22,19 @@ object UnityBridge {
 
     /** Callback from Unity — set by KicksViewModel to receive messages. */
     var onMessageFromUnity: ((String) -> Unit)? = null
+
+    private val _replayCinematicDoneAt = MutableStateFlow(0L)
+
+    /**
+     * Wall-clock time Unity last reported a replay cinematic finished
+     * (`replayComplete`). The replay overlay — running in `:unity`, the same
+     * process that `replayComplete` lands in — collects this to know exactly
+     * when the kicks have stopped, so it holds its result HUD back until then
+     * rather than guessing with a timer and risking the HUD landing on top of a
+     * kick still in flight. Carries a timestamp so a collector can ignore
+     * completions that predate the cinematic it just fired.
+     */
+    val replayCinematicDoneAt: StateFlow<Long> = _replayCinematicDoneAt.asStateFlow()
 
     // ── Kotlin → Unity ──
     //
@@ -60,8 +76,16 @@ object UnityBridge {
     @JvmStatic
     fun receiveFromUnity(jsonString: String) {
         Log.d(TAG, "← Unity: $jsonString")
+        if (isReplayComplete(jsonString)) {
+            // Surface the cinematic-finished moment to the :unity-local overlay
+            // (see [replayCinematicDoneAt]) before relaying onward to main.
+            _replayCinematicDoneAt.value = System.currentTimeMillis()
+        }
         onMessageFromUnity?.invoke(jsonString)
     }
+
+    private fun isReplayComplete(json: String): Boolean =
+        runCatching { JSONObject(json).getString("type") == "replayComplete" }.getOrDefault(false)
 
     /**
      * The Compose picker ([MatchPickerOverlay]) submitting its locked picks —

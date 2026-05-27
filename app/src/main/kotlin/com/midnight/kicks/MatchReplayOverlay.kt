@@ -11,11 +11,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -23,7 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -35,7 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 
 /**
  * Full-screen replay overlay rendered above Unity by [KicksMatchActivity].
@@ -68,7 +67,7 @@ import kotlinx.coroutines.delay
  *    can't tap-through before they see the result.
  */
 @Composable
-fun MatchReplayOverlay() {
+fun MatchReplayOverlay(onRematch: () -> Unit, onMenu: () -> Unit) {
     val replay by MatchHud.replay.collectAsState()
     val hud by MatchHud.state.collectAsState()
     val show = replay
@@ -78,99 +77,236 @@ fun MatchReplayOverlay() {
         exit = fadeOut(animationSpec = tween(durationMillis = 200)),
     ) {
         if (show != null) {
-            ReplayBody(hudReplay = show, localRole = hud.role)
+            ReplayBody(hudReplay = show, localRole = hud.role, onRematch = onRematch, onMenu = onMenu)
         }
     }
 }
 
 @Composable
-private fun ReplayBody(hudReplay: MatchHud.HudReplay, localRole: Player?) {
+private fun ReplayBody(
+    hudReplay: MatchHud.HudReplay,
+    localRole: Player?,
+    onRematch: () -> Unit,
+    onMenu: () -> Unit,
+) {
     val replay = hudReplay.show
-    // How many rows have animated in so far. Driven by a LaunchedEffect
-    // that ticks every ROW_REVEAL_INTERVAL_MS. Keyed on the publish
-    // timestamp (not the ReplayShow itself) so two structurally
-    // identical replays — e.g. an SD round that publishes the same
-    // outcome twice through a corner case — restart the animation.
-    // Without this, data-class equality would silently re-use the
-    // previous animation state and the second show would skip straight
-    // to "all revealed".
-    var revealedRows by remember(hudReplay.publishedAtMs) { mutableIntStateOf(0) }
+    // Two phases, gated on the ACTUAL cinematic finishing (not a guessed
+    // timer): while the kicks play, draw nothing over them; once Unity reports
+    // the cinematic done, bring up the result HUD. Keyed on the publish
+    // timestamp so each replay (even two with identical outcomes) restarts
+    // clean rather than re-using the previous show's "done" state.
+    var cinematicDone by remember(hudReplay.publishedAtMs) { mutableStateOf(false) }
     LaunchedEffect(hudReplay.publishedAtMs) {
-        // Kick off the 3D cinematic the instant the replay appears — the kicks
-        // are the main event, played live under this thin HUD (not gated behind
-        // a scoreboard + Continue any more). Then climb the running score
-        // roughly in step with them, one tick per round.
+        cinematicDone = false
+        val firedAt = System.currentTimeMillis()
+        // Kick off the 3D cinematic the instant the replay appears. The kicks
+        // are the whole show here — nothing is drawn on top of them.
         val winner = when {
             replay.p1Score > replay.p2Score -> "P1"
             replay.p2Score > replay.p1Score -> "P2"
             else -> null
         }
         UnityBridge.playReplayCinematic(replay.rounds, replay.p1Score, replay.p2Score, winner)
-
-        delay(INITIAL_PAUSE_MS)
-        while (revealedRows < replay.rounds.size) {
-            revealedRows += 1
-            delay(ROW_REVEAL_INTERVAL_MS)
-        }
+        // Hold the HUD back until Unity says the kicks are done. Gating on the
+        // real completion (not an estimated duration) is what guarantees the
+        // result never lands on top of a kick still in flight.
+        UnityBridge.replayCinematicDoneAt.first { it >= firedAt }
+        cinematicDone = true
     }
 
-    // Running score, updated as rows reveal. Only count goals up to
-    // revealedRows to mimic a scoreboard climbing in real time. The
-    // final score (replay.p1Score/p2Score) is chain-authoritative,
-    // not derived from rounds — but the running view is just from
-    // RoundResult.result, which encodes the goal/save outcome
-    // computed by MatchResult.toRoundResults. Single fold over the
-    // revealed prefix tallies both sides in one pass.
-    var runningP1 = 0
-    var runningP2 = 0
-    for (idx in 0 until revealedRows) {
-        val r = replay.rounds[idx]
-        if (r.result == "goal") {
-            if (r.shooter == "P1") runningP1 += 1 else runningP2 += 1
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (!cinematicDone) {
+            // Cinematic playing: draw NOTHING. Just swallow stray taps so they
+            // don't poke the 3D scene — the kicks are fully visible underneath.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) { detectTapGestures {} },
+            )
+        }
+        // Result HUD — fades in the moment the kicks finish.
+        AnimatedVisibility(
+            visible = cinematicDone,
+            enter = fadeIn(animationSpec = tween(durationMillis = 250)),
+        ) {
+            ResultHud(replay = replay, localRole = localRole, onRematch = onRematch, onMenu = onMenu)
         }
     }
+}
 
-    val allRevealed = revealedRows >= replay.rounds.size
-
+/**
+ * The post-cinematic result screen, shown after the kicks have played out. Owns
+ * the screen with a near-opaque scrim so Unity's idle label can't bleed through.
+ *
+ * Two faces, decided by the score:
+ *  - **Decisive** (`p1Score != p2Score`) → the match is OVER (regulation decided,
+ *    or an SD round broke the tie): the celebration end screen — verdict, score,
+ *    shoot-out recap, and REMATCH / MENU. It does NOT dismiss the replay; the two
+ *    buttons are the only ways out (see KicksActivity, which also suppresses the
+ *    auto-advance for a decisive replay so this screen stays put).
+ *  - **Tied** → another beat is coming (sudden death, or the next SD round): the
+ *    intermediate "tap to continue", which dismisses the replay so the
+ *    orchestrator advances.
+ */
+@Composable
+private fun ResultHud(
+    replay: MatchHud.ReplayShow,
+    localRole: Player?,
+    onRematch: () -> Unit,
+    onMenu: () -> Unit,
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // Absorb touches so they don't fall through to Unity while the
-            // replay plays; the Continue button's own clickable wins in its
-            // bounds.
             .pointerInput(Unit) { detectTapGestures {} }
-            // Thin HUD: dark only at the very top + bottom for text legibility;
-            // the centre stays clear so the 3D kick cinematic is the star.
             .background(
                 Brush.verticalGradient(
-                    0f to KicksColors.Background.copy(alpha = 0.82f),
-                    0.26f to Color.Transparent,
-                    0.74f to Color.Transparent,
-                    1f to KicksColors.Background.copy(alpha = 0.88f),
+                    0f to KicksColors.Background.copy(alpha = 0.92f),
+                    1f to KicksColors.Background.copy(alpha = 0.96f),
                 ),
             )
             .statusBarsPadding()
-            .padding(20.dp),
+            .padding(24.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Header(replay.kind, replay.sdRoundNumber)
-            Spacer(modifier = Modifier.height(8.dp))
-            // Running score climbs as the kicks land (one tick per round).
-            Scoreboard(p1Score = runningP1, p2Score = runningP2, localRole = localRole)
-            // Centre left clear — the 3D kicks play there, under the HUD.
-            Spacer(modifier = Modifier.weight(1f))
-            if (allRevealed) {
-                ContinueButton(
-                    finalP1Score = replay.p1Score,
-                    finalP2Score = replay.p2Score,
-                    kind = replay.kind,
-                )
+        if (replay.p1Score != replay.p2Score) {
+            EndScreen(replay = replay, localRole = localRole, onRematch = onRematch, onMenu = onMenu)
+        } else {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
+                Header(replay.kind, replay.sdRoundNumber)
+                Scoreboard(p1Score = replay.p1Score, p2Score = replay.p2Score, localRole = localRole)
+                IntermediateContinue(kind = replay.kind, p1Score = replay.p1Score, p2Score = replay.p2Score)
             }
         }
+    }
+}
+
+/**
+ * Match-over celebration: verdict + final score + the shoot-out recap + the two
+ * exits. Outcome is framed from THIS device ([localRole]; null = PvAI, human is
+ * P1), so each player sees their own win/loss.
+ */
+@Composable
+private fun EndScreen(
+    replay: MatchHud.ReplayShow,
+    localRole: Player?,
+    onRematch: () -> Unit,
+    onMenu: () -> Unit,
+) {
+    val isP2 = localRole == Player.P2
+    val mine = if (isP2) replay.p2Score else replay.p1Score
+    val theirs = if (isP2) replay.p1Score else replay.p2Score
+    val won = mine > theirs
+    val opponentName = if (localRole == null) "AI" else "OPPONENT"
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        Text(text = if (won) "🏆" else "💔", fontSize = 56.sp)
+        Text(
+            text = if (won) "YOU WIN!" else "$opponentName WINS",
+            color = if (won) KicksColors.Success else KicksColors.Danger,
+            fontSize = 34.sp,
+            fontWeight = FontWeight.Black,
+            letterSpacing = 2.sp,
+        )
+        Text(
+            text = "$mine – $theirs",
+            color = Color.White,
+            fontSize = 52.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        ShootoutRecap(rounds = replay.rounds, localRole = localRole, opponentName = opponentName)
+        EndActions(onRematch = onRematch, onMenu = onMenu)
+    }
+}
+
+/**
+ * Classic penalty-board recap: one row of goal/save marks per player, in kicking
+ * order, with regulation and sudden-death visually split. ● = goal, ○ = saved.
+ */
+@Composable
+private fun ShootoutRecap(rounds: List<RoundResult>, localRole: Player?, opponentName: String) {
+    val isP2 = localRole == Player.P2
+    val mineTag = if (isP2) "P2" else "P1"
+    val theirsTag = if (isP2) "P1" else "P2"
+    // Each player's kicks in order; first 5 are regulation, the rest sudden death.
+    val mineMarks = rounds.filter { it.shooter == mineTag }.map { it.result == "goal" }
+    val theirMarks = rounds.filter { it.shooter == theirsTag }.map { it.result == "goal" }
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        RecapRow(label = "YOU", marks = mineMarks)
+        RecapRow(label = opponentName, marks = theirMarks)
+        Text(
+            text = "● goal   ○ saved",
+            color = Color.White.copy(alpha = 0.45f),
+            fontSize = 11.sp,
+            letterSpacing = 1.sp,
+        )
+    }
+}
+
+private const val REGULATION_KICKS_PER_PLAYER = 5
+
+@Composable
+private fun RecapRow(label: String, marks: List<Boolean>) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = label,
+            color = Color.White.copy(alpha = 0.7f),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            modifier = Modifier.width(34.dp),
+        )
+        marks.forEachIndexed { idx, goal ->
+            // Visually separate regulation from sudden death.
+            if (idx == REGULATION_KICKS_PER_PLAYER) {
+                Text(text = "|", color = Color.White.copy(alpha = 0.3f), fontSize = 16.sp)
+            }
+            Text(
+                text = if (goal) "●" else "○",
+                color = if (goal) KicksColors.Success else Color.White.copy(alpha = 0.4f),
+                fontSize = 18.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EndActions(onRematch: () -> Unit, onMenu: () -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        EndButton(text = "REMATCH", fill = KicksColors.Picking, textColor = KicksColors.SurfaceMuted, onClick = onRematch)
+        EndButton(text = "MENU", fill = KicksColors.SurfaceMuted, textColor = Color.White, onClick = onMenu)
+    }
+}
+
+@Composable
+private fun EndButton(text: String, fill: Color, textColor: Color, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clickable { onClick() }
+            .background(color = fill, shape = RoundedCornerShape(12.dp))
+            .padding(horizontal = 28.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            color = textColor,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.5.sp,
+        )
     }
 }
 
@@ -237,23 +373,18 @@ private fun ScoreCell(label: String, score: Int, accent: Color) {
 }
 
 @Composable
-private fun ContinueButton(
-    finalP1Score: Int,
-    finalP2Score: Int,
+private fun IntermediateContinue(
     kind: MatchHud.ReplayKind,
+    p1Score: Int,
+    p2Score: Int,
 ) {
-    // Decide the continuation copy based on what's next. For regulation,
-    // a tie means "headed to SD"; decisive means "winner ahead." For SD
-    // rounds, similar logic. Same button affordance either way —
-    // tap-to-dismiss fires MatchHud.dismissReplay() and the orchestrator
-    // awaiting `replayDismissed` wakes up.
-    val nextCopy = when {
-        finalP1Score == finalP2Score && kind == MatchHud.ReplayKind.REGULATION ->
-            "TIED $finalP1Score-$finalP2Score — TAP FOR SUDDEN DEATH"
-        finalP1Score == finalP2Score && kind == MatchHud.ReplayKind.SUDDEN_DEATH_ROUND ->
-            "$finalP1Score-$finalP2Score — TAP FOR NEXT ROUND"
-        else ->
-            "FINAL $finalP1Score-$finalP2Score — TAP TO CONTINUE"
+    // Only reached when the score is TIED — there's another beat coming, so this
+    // dismisses the replay (MatchHud.dismissReplay → the orchestrator awaiting
+    // `replay == null` advances). A decisive score never lands here; that's the
+    // EndScreen. Regulation tie → sudden death; SD-round tie → next round.
+    val nextCopy = when (kind) {
+        MatchHud.ReplayKind.REGULATION -> "TIED $p1Score-$p2Score — TAP FOR SUDDEN DEATH"
+        MatchHud.ReplayKind.SUDDEN_DEATH_ROUND -> "$p1Score-$p2Score — TAP FOR NEXT ROUND"
     }
     Box(
         modifier = Modifier
@@ -276,9 +407,3 @@ private fun ContinueButton(
         )
     }
 }
-/** Pause before the first row reveals — lets the user read the header. */
-private const val INITIAL_PAUSE_MS: Long = 600L
-
-/** Time between consecutive row reveals — fast enough to keep momentum,
- * slow enough to read each outcome. 10 rounds * 350ms = ~3.5s total. */
-private const val ROW_REVEAL_INTERVAL_MS: Long = 350L

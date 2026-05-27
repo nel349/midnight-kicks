@@ -117,6 +117,15 @@ class KicksActivity : FragmentActivity() {
     private var currentRole: Player? = null
 
     /**
+     * The role of the match that just finished, captured in [handleMatchResult]
+     * before [currentRole] is cleared. The end screen's REMATCH lands back in
+     * main as a `rematch` message AFTER the match is done, so [currentRole] is
+     * already null by then — this remembers which "play again" flow to start:
+     * `null` → new PvAI; `P1` → create a new match; `P2` → join screen.
+     */
+    private var lastPlayedRole: Player? = null
+
+    /**
      * Role array last published to the picker via [MatchHud.showPicker].
      * Cached here so [handleChoicesLocked] can bucket the returned picks
      * back into shoots vs keeps using the same per-index role labels the
@@ -142,6 +151,14 @@ class KicksActivity : FragmentActivity() {
      * state machine from it, so there's nothing local worth keeping alive.
      */
     private var orchestratorJob: Job? = null
+
+    /**
+     * Armed when a replay cinematic finishes ([handleReplayComplete]); fires
+     * the auto-advance safety net after [REPLAY_AUTO_ADVANCE_GRACE_MS]. Tracked
+     * so it can be cancelled on pause and re-armed per replay — a single missed
+     * Continue tap must never strand the committed opponent forever.
+     */
+    private var replayAutoAdvanceJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -862,6 +879,8 @@ class KicksActivity : FragmentActivity() {
                 "choicesLocked" -> handleChoicesLocked(json)
                 "replayComplete" -> handleReplayComplete()
                 "matchPaused" -> handleMatchPaused()
+                "endToMenu" -> handleEndToMenu()
+                "rematch" -> handleRematch()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse Unity message: ${e.message}")
@@ -890,6 +909,10 @@ class KicksActivity : FragmentActivity() {
         orchestratorJob?.cancel()
         orchestratorJob = null
 
+        // Drop any armed replay auto-advance — the match it belonged to is gone.
+        replayAutoAdvanceJob?.cancel()
+        replayAutoAdvanceJob = null
+
         // Clear the in-match HUD so a stale banner doesn't linger if the user
         // re-enters via a different path.
         MatchHud.reset()
@@ -902,6 +925,43 @@ class KicksActivity : FragmentActivity() {
             "Match paused — tap RESUME MATCH to pick up where you left off"
         } else {
             "Match paused"
+        }
+    }
+
+    /**
+     * End-screen MENU tap (the match is already RESOLVED, not paused). `:unity`
+     * killed itself right after sending this, so drop the dead inbox and clear
+     * the in-match HUD, then land on the menu — KEEPING the win text
+     * [handleMatchResult] already set (unlike the paused path, which overwrites
+     * the status).
+     */
+    private fun handleEndToMenu() {
+        MatchBridge.onUnityGone()
+        MatchHud.reset()
+        hasActiveSession.value = store.loadAll().isNotEmpty()
+        screen.value = KicksScreen.Menu
+    }
+
+    /**
+     * End-screen REMATCH tap. The finished match is gone (Resolved → deleted)
+     * and there's no peer channel for an "instant" PvP rematch — the only link
+     * between players is the contract. So REMATCH means "play again in your
+     * role": PvAI → a fresh AI match now; P1 → create a new match to share; P2 →
+     * the join screen for the opponent's new invite.
+     */
+    private fun handleRematch() {
+        MatchBridge.onUnityGone()
+        MatchHud.reset()
+        when (lastPlayedRole) {
+            null -> {
+                currentRole = null
+                launchUnityChoicePhase()
+            }
+            Player.P1 -> startCreateMatch()
+            Player.P2 -> {
+                statusMessage.value = "Rematch — enter your opponent's new match link"
+                screen.value = KicksScreen.Joining()
+            }
         }
     }
 
@@ -1006,15 +1066,11 @@ class KicksActivity : FragmentActivity() {
      *   [result] (since the user didn't re-pick).
      */
     private suspend fun handleMatchResult(result: MatchResult, deviceLabels: List<String>) {
-        // Decisive endings (regulation 5-3 or SD round N decisive)
-        // publish a replay overlay but never enter `gatherSdPicksFromUi`
-        // to wait it out. Gate the winner UI on dismissal here so
-        // the user sees the kicks before the score line lands.
-        if (MatchHud.replay.value != null) {
-            Log.i(TAG, "handleMatchResult: waiting for final replay dismissal before winner UI")
-        }
-        MatchHud.replay.first { it == null }
-
+        // The final replay (published by the orchestrator before it returned)
+        // becomes the end screen — a decisive ResultHud that the user exits via
+        // REMATCH / MENU, not a dismissal. So this no longer waits on the replay
+        // being dismissed (it never is); it runs immediately, doing the menu-side
+        // housekeeping (win text, role release) the user sees when they return.
         val (p1Score, p2Score) = result.scores()
         val winner = when {
             p1Score > p2Score -> "P1"
@@ -1055,11 +1111,10 @@ class KicksActivity : FragmentActivity() {
         // — the kicks are the main event, not a post-script. This block now
         // just gates the winner UI on that replay being seen.
 
-        // Release the role at the true end of the match. This moved out of
-        // handleReplayComplete: the cinematic now completes *during* the replay
-        // (firing replayComplete per round), so clearing there would null the
-        // role before this handler reads it on a decisive match → PvP results
-        // mislabelled as PvAI. Cleared here, after the role has been used.
+        // Release the role at the true end of the match — but remember it first
+        // so the end screen's REMATCH (which arrives after this runs) knows which
+        // "play again" flow to start.
+        lastPlayedRole = currentRole
         currentRole = null
     }
 
@@ -1138,11 +1193,40 @@ class KicksActivity : FragmentActivity() {
 
     private fun handleReplayComplete() {
         // The 3D cinematic finished one replay (regulation, an SD round, or the
-        // final). Since the kicks now play per-replay (see MatchReplayOverlay),
-        // this fires multiple times per match and is NOT a reliable "match
-        // over" signal — the winner UI + role release live in handleMatchResult
-        // (gated on the final replay's dismissal). Nothing to do here but log.
-        Log.i(TAG, "Replay cinematic finished (role=$currentRole)")
+        // final). This is NOT a "match over" signal — the winner UI + role
+        // release live in handleMatchResult, gated on the replay's dismissal.
+        //
+        // What it IS: the reliable moment to arm the auto-advance safety net.
+        // Both replay gates (gatherSdPicksFromUi + handleMatchResult) await
+        // `MatchHud.replay.first { it == null }`, which normally clears on the
+        // user's Continue tap. But a player who never taps — confused by Unity's
+        // idle label bleeding through, distracted, backgrounded — would hang the
+        // orchestrator here forever, AND strand the opponent (who has committed
+        // and is waiting on this device's next move). So once the cinematic has
+        // played, give the user a grace to tap Continue themselves, then advance
+        // on their behalf. A deliberate Continue tap still wins — it clears the
+        // replay first, and the guard below then no-ops.
+        val finished = MatchHud.replay.value ?: return
+        // A decisive (match-over) replay becomes the celebration end screen — it
+        // must stay put until the user taps REMATCH / MENU, so it gets NO
+        // auto-advance. Only intermediate replays (tie → SD, SD round → next)
+        // auto-advance on the user's behalf.
+        if (finished.show.p1Score != finished.show.p2Score) {
+            Log.i(TAG, "Replay cinematic finished — decisive, end screen persists (no auto-advance)")
+            return
+        }
+        Log.i(TAG, "Replay cinematic finished (role=$currentRole) — arming auto-advance")
+        replayAutoAdvanceJob?.cancel()
+        replayAutoAdvanceJob = lifecycleScope.launch {
+            delay(REPLAY_AUTO_ADVANCE_GRACE_MS)
+            // Advance ONLY the replay that just finished. If the user already
+            // tapped Continue (replay is null) or a newer replay was published
+            // during the grace (different publish epoch), leave it untouched.
+            if (MatchHud.replay.value?.publishedAtMs == finished.publishedAtMs) {
+                Log.i(TAG, "Auto-advancing replay — no Continue tap within grace")
+                MatchHud.dismissReplay()
+            }
+        }
     }
 
     /**
@@ -1168,6 +1252,16 @@ class KicksActivity : FragmentActivity() {
 
         /** How long to wait for KicksMatchActivity (Unity host) to come up before sending the first bridge message. */
         private const val UNITY_BOOT_DELAY_MS = 2_000L
+
+        /**
+         * After a replay cinematic finishes, how long to wait for the user to
+         * tap Continue before auto-advancing on their behalf. Long enough that
+         * the final score lands and a present player can tap deliberately
+         * (honoring the manual "tap to continue" beat); short enough that a
+         * player who walks away can't strand their committed opponent for long.
+         * See [handleReplayComplete].
+         */
+        private const val REPLAY_AUTO_ADVANCE_GRACE_MS = 8_000L
 
         /**
          * Stored alongside the persisted [MatchStore.Match] so the resume UI

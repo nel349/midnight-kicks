@@ -151,6 +151,24 @@ class KicksMatchActivity : UnityPlayerGameActivity() {
         Process.killProcess(Process.myPid())
     }
 
+    /**
+     * End-screen exits (the match is RESOLVED, not paused — so these use their
+     * own message types, not `matchPaused`, to avoid main overwriting the win
+     * text with "paused" copy). Each notifies main, then kills `:unity` for the
+     * same ANR-free instant teardown as [leaveMatch]; main does the navigation.
+     */
+    private fun endMatchToMenu() {
+        Log.i(TAG, "End screen: MENU")
+        sendToMain(MatchBridge.MSG_FROM_UNITY, """{"type":"endToMenu"}""")
+        Process.killProcess(Process.myPid())
+    }
+
+    private fun endMatchRematch() {
+        Log.i(TAG, "End screen: REMATCH")
+        sendToMain(MatchBridge.MSG_FROM_UNITY, """{"type":"rematch"}""")
+        Process.killProcess(Process.myPid())
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -195,7 +213,7 @@ class KicksMatchActivity : UnityPlayerGameActivity() {
                     // masks the commit/reveal wait). Bottom of the stack — the
                     // phase overlays below are mutually exclusive with it.
                     MatchStageOverlay()
-                    MatchReplayOverlay()
+                    MatchReplayOverlay(onRematch = ::endMatchRematch, onMenu = ::endMatchToMenu)
                     MatchHudOverlay()
                     // Picker on top — when a choice phase is open it's a focused
                     // modal over the dimmed pitch; otherwise it draws nothing.
