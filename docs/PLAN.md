@@ -1,7 +1,7 @@
 # Midnight Kicks — Penalty Shootout on Midnight
 
 **Target:** FIFA World Cup 2026 (June 11 - July 19)
-**Updated:** 2026-05-24
+**Updated:** 2026-05-27
 
 ---
 
@@ -21,7 +21,7 @@ Sudden death: **one pairing per batch** (your `shoot` + your `keep`). Decisive w
 
 **Anti-cheat:** commit-reveal. Pedersen commitment of `(shoots[5], keeps[5])` + 32-byte nonce stored as private state. ZK circuit proves revealed values match commitments. Cannot change choices after commit.
 
-> **Status:** V3 is the live spec across contract, Kotlin, and Unity (2026-05-18). The on-chain contract, the Android orchestrator, and the C# choice/replay flow all use the symmetric 10-round model with single-pairing sudden death. Remaining Phase 4 milestone: two-emulator E2E on localnet against the V3 build.
+> **Status:** V3 is the live spec across contract, Kotlin, and Unity (2026-05-18), and the two-player game runs end-to-end on-chain (two-emulator E2E green 2026-05-24). A 2026-05-27 pass hardened the sudden-death + rematch flow and revamped the in-match game-feel. **The game is playable; remaining work is Phase 5 polish + a pending Unity re-export, then Phase 6 launch.** Leaderboard, cloud auto-backup, and rematch re-pairing are v1.1 (post-beta).
 
 Detailed game logic, state machine, circuit specs, UI flows, and Unity bridge spec in [`GAME_DESIGN.md`](GAME_DESIGN.md). Current Unity work and asset checklist in [`../ROADMAP.md`](../UI_ROADMAP.md).
 
@@ -126,6 +126,10 @@ Separate repo: `midnight-kicks/` (app/ + unity/ + contract/). Consumes Kuira SDK
   - [x] **Results display** — the match outcome (winner / draw, per-round breakdown, final score) renders in the replay overlay via `MatchState.Resolved(MatchResult)`. No separate results screen needed.
   - [ ] **On-chain leaderboard (registry contract) — deferred to v1.1 (post-beta).** Approach decided 2026-05-24 (registry contract; verify-via-`external-contract` trust model so a client can't record a win that didn't happen). The game is fully playable without it, so it's punted past open beta. Build notes in the Leaderboard section.
 - [ ] **Phase 5 — Polish + release**
+  - [x] **In-match game-feel + UX pass (2026-05-27)** — the in-match surfaces are fully Compose over Unity now: animated grouped direction picker, the replay reworked so the 3D kicks play clean (live GOAL!/SAVED! + a climbing score chip) then a result/celebration end screen with a shoot-out recap + REMATCH / MENU, and the top HUD fixed for banner overlap + camera-cutout. (The live per-kick flash and the dormant LEAVE-label cleanup activate on the next Unity re-export.)
+  - [x] **Sudden-death + rematch correctness (2026-05-27)** — fixed three real deadlocks/crashes surfaced by live play: the SD replay-dismissal hang (auto-advance safety net), resume from any mid-SD-round state (was crashing at `BothSdCommitted`), and a rematch reveal crash from a stale contract snapshot leaking into the new match. Indexer-down degrades gracefully (Reconnecting banner + auto-recover) instead of a silent freeze.
+  - [x] **Cloud persistence — active recovery shipped, long-term tiers designed** — unfinished matches round-trip through the sigil's Block Store backup, so a match resumes across reinstall (after a manual Backup). The archive/registry + silent auto-backup tiers are designed in [`CLOUD_PERSISTENCE.md`](CLOUD_PERSISTENCE.md) (wishlist #30/#31), not yet built.
+  - [ ] **Unity re-export** — activate the dormant C# accumulated this session: per-kick `roundResult` (drives the live flash/score), the removed IMGUI status/LEAVE/picker surfaces, and the LEAVE label. Owner: user's Unity toolchain.
   - [ ] APK size audit (< 100MB), proof latency tuning
   - [ ] Error handling, timeout UX, disconnect recovery
     - [x] Legible HUD failure copy — `KicksErrorCopy` maps `MatchState.Failed` throwables to plain-language lines (network/indexer, deadline, dust, funds, contract-rejected) instead of raw exceptions; raw stays in logs.
