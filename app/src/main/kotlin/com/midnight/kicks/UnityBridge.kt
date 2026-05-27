@@ -46,14 +46,9 @@ object UnityBridge {
         deliverToUnityPlayer(json.toString())
     }
 
-    /** Tell Unity to show a status message (waiting, proving, etc.). */
-    fun sendStatus(message: String) {
-        val json = JSONObject().apply {
-            put("type", "status")
-            put("message", message)
-        }
-        relayToUnity(json.toString())
-    }
+    // Status (waiting / proving / reconnecting / …) is no longer sent to Unity:
+    // it's the Compose MatchHudOverlay + MatchStageOverlay, driven by MatchHud.
+    // (The old sendStatus → Unity IMGUI label is gone.)
 
     // ── Unity → Kotlin ──
 

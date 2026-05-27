@@ -348,55 +348,10 @@ public class ShotManager : MonoBehaviour
         }
     }
 
-    void OnGUI()
-    {
-        if (!isPlaying) return;
-
-        EnsureGuiStyles();
-
-        GUI.Label(new Rect(0, 20, Screen.width, 50), currentScore, scoreStyle);
-
-        if (showResult)
-        {
-            GUI.Label(new Rect(0, 0, Screen.width, Screen.height), resultMessage, resultStyle);
-        }
-        else if (!string.IsNullOrEmpty(currentFeedback))
-        {
-            // Color varies per round; mutate the cached style rather than allocate.
-            feedbackStyle.normal.textColor = feedbackColor;
-            GUI.Label(new Rect(0, Screen.height / 2 - 100, Screen.width, 100), currentFeedback, feedbackStyle);
-        }
-    }
-
-    /// <summary>
-    /// Build OnGUI styles once on first paint. `GUI.skin` is only reliably
-    /// available inside an OnGUI callback, so we lazy-init here rather than in
-    /// Start. Subsequent frames reuse the same instances — no GC pressure.
-    /// </summary>
-    private void EnsureGuiStyles()
-    {
-        if (scoreStyle != null) return;
-
-        scoreStyle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = ScoreFontSize,
-            alignment = TextAnchor.UpperCenter,
-        };
-        scoreStyle.normal.textColor = Color.white;
-
-        resultStyle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = ResultFontSize,
-            fontStyle = FontStyle.Bold,
-            alignment = TextAnchor.MiddleCenter,
-        };
-        resultStyle.normal.textColor = Color.white;
-
-        feedbackStyle = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = FeedbackFontSize,
-            fontStyle = FontStyle.Bold,
-            alignment = TextAnchor.MiddleCenter,
-        };
-    }
+    // OnGUI + EnsureGuiStyles removed: the replay's score / result / per-round
+    // feedback text now lives in the Compose MatchReplayOverlay (the score HUD +
+    // the result) over the live 3D, and the goal/save OUTCOME is conveyed by the
+    // 3D animation itself (ball in net vs keeper save). ShotManager is now pure
+    // 3D choreography. The currentScore / resultMessage / currentFeedback fields
+    // it still sets are dead (no renderer) and can be pruned in a later pass.
 }

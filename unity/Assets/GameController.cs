@@ -83,10 +83,8 @@ public class GameController : MonoBehaviour
             case "replay":
                 StartReplay(jsonString);
                 break;
-            case "status":
-                var statusMsg = JsonUtility.FromJson<StatusMessage>(jsonString);
-                Debug.Log($"[GameController] Status: {statusMsg.message}");
-                break;
+            // "status" removed: status is now the Compose HUD/stage (Kotlin no
+            // longer sends it; sendStatus is gone).
             default:
                 Debug.LogWarning($"[GameController] Unknown message type: {json.type}");
                 break;
@@ -304,13 +302,6 @@ public class ChoicePhaseMessage
     /// KEEP" and sizes its `choices` buffer from this array.
     /// </summary>
     public string[] roles;
-}
-
-[System.Serializable]
-public class StatusMessage
-{
-    public string type;
-    public string message;
 }
 
 [System.Serializable]
