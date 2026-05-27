@@ -113,6 +113,45 @@ class MatchStateTest {
     }
 
     @Test
+    fun `sdRound is readable from every SD-phase state, not just SdRoundOpen`() {
+        // The SD orchestrator loop reads the round at its top via
+        // MatchManager.currentSdRoundOrError() → MatchState.sdRound. A resume
+        // can re-enter the loop mid-round (BothSdCommitted, P1SdRevealed, …),
+        // so EVERY SD-phase state must surface its round — not just
+        // SdRoundOpen. When this regressed, a relaunch at BothSdCommitted
+        // threw and dead-locked both players in sudden death.
+        val sdStates = listOf(
+            MatchState.SdRoundOpen(address, round = 4),
+            MatchState.P1SdCommitting(address, round = 4),
+            MatchState.P1SdCommitted(address, round = 4),
+            MatchState.P2SdCommitting(address, round = 4),
+            MatchState.BothSdCommitted(address, round = 4),
+            MatchState.P1SdRevealing(address, round = 4),
+            MatchState.P1SdRevealed(address, round = 4),
+            MatchState.P2SdRevealing(address, round = 4),
+        )
+        for (state in sdStates) {
+            assertEquals("sdRound for ${state::class.simpleName}", 4, state.sdRound)
+        }
+        // A Failed state in SD recovers the round from its previous state.
+        assertEquals(
+            4,
+            MatchState.Failed(MatchState.BothSdCommitted(address, round = 4), RuntimeException("x")).sdRound,
+        )
+    }
+
+    @Test
+    fun `sdRound is null for non-SD states`() {
+        // currentSdRoundOrError must still fault on regulation / resolved
+        // states — there's no round to read, and silently inventing one
+        // would mask a real orchestrator bug.
+        assertNull(MatchState.SdkReady.sdRound)
+        assertNull(MatchState.BothCommitted(address).sdRound)
+        assertNull(MatchState.P1Revealed(address).sdRound)
+        assertNull(MatchState.Resolved(sampleResult).sdRound)
+    }
+
+    @Test
     fun `Resolved address comes from the contained MatchResult`() {
         val resolved = MatchState.Resolved(sampleResult)
         assertEquals(address, resolved.address)

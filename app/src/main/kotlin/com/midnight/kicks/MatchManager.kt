@@ -1918,15 +1918,22 @@ open class MatchManager(
     }
 
     /**
-     * Read the round number from the current [MatchState.SdRoundOpen].
-     * Called at the top of every SD loop iteration; the orchestrator's
-     * state machine has just transitioned into SdRoundOpen so this is
-     * always the live round number to surface to the UI.
+     * Read the current SD round number, from whatever SD-phase state the
+     * machine is in. Called at the top of every SD loop iteration.
+     *
+     * The LIVE orchestrator always enters a round at [MatchState.SdRoundOpen],
+     * but RESUME can re-enter mid-round — `BothSdCommitted` (both picks landed,
+     * nobody has revealed yet), `P1SdRevealed`, etc. — and those carry the same
+     * round number. So this reads it via [MatchState.sdRound] (defined over the
+     * whole SD phase) rather than insisting on SdRoundOpen, which used to throw
+     * and dead-lock both players after a relaunch at `BothSdCommitted`. It still
+     * errors for genuinely non-SD states (regulation / resolved), where there is
+     * no round to read.
      */
     private fun currentSdRoundOrError(): Int {
         val s = state.value
-        return (s as? MatchState.SdRoundOpen)?.round
-            ?: error("currentSdRoundOrError: state is ${s::class.simpleName}, expected SdRoundOpen")
+        return s.sdRound
+            ?: error("currentSdRoundOrError: state ${s::class.simpleName} carries no SD round")
     }
 
     private fun dirLabel(d: Int): String = when (d) { 0 -> "L"; 1 -> "C"; 2 -> "R"; else -> "?" }
