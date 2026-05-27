@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -146,7 +147,8 @@ private fun PickerContent(show: MatchHud.PickerShow) {
             )
             // Modal: swallow stray taps so they don't fall through to Unity.
             .pointerInput(Unit) { detectTapGestures { } }
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            .displayCutoutPadding(),
     ) {
         Column(
             modifier = Modifier

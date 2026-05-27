@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -68,13 +69,25 @@ import kotlinx.coroutines.delay
 @Composable
 fun MatchHudOverlay() {
     val state by MatchHud.state.collectAsState()
+    val picker by MatchHud.picker.collectAsState()
+    val replay by MatchHud.replay.collectAsState()
     // The two long-wait modes are owned by the full-screen MatchStageOverlay
     // (centred, animated, covers Unity's idle label) — suppress the top banner
     // for them so the status isn't shown twice. The banner still handles the
-    // brief PICKING / DONE / ERROR beats.
+    // brief DONE / ERROR beats.
     val handledByStage = state.mode == MatchHud.Mode.TX_IN_FLIGHT ||
         state.mode == MatchHud.Mode.WAITING_FOR_OPPONENT
-    val visible = state.mode != MatchHud.Mode.IDLE && state.primary != null && !handledByStage
+    // The picker is a full modal with its own round header ("REGULATION ·
+    // SHOOTING 1 of 5"); the floating status banner on top of it is redundant
+    // and overlaps it + the LEAVE pill. Suppress the banner while picking.
+    // Suppress during the replay too: it has its own live score chip + result
+    // screen, and a "Match complete!" banner over the kicks would spoil the
+    // suspense before they've played out.
+    val visible = state.mode != MatchHud.Mode.IDLE &&
+        state.primary != null &&
+        !handledByStage &&
+        picker == null &&
+        replay == null
 
     // sessionEpochMs bumps on every primary-state change. Resetting
     // the timer on that key gives the user "00:01… 00:02…" starting
@@ -120,7 +133,10 @@ private fun HudBanner(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .displayCutoutPadding()
+            // Reserve room on the right so the banner never slides under the
+            // top-right LEAVE pill (a separate overlay) — they share the top edge.
+            .padding(start = 12.dp, end = 96.dp, top = 8.dp, bottom = 8.dp)
             .background(
                 color = KicksColors.BannerScrim,     // 80% opaque near-black
                 shape = RoundedCornerShape(12.dp),
