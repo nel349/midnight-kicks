@@ -130,30 +130,30 @@ dependencies {
     // transitive deps (zxing, bitcoinj, ktor, room, credentials, etc.) so
     // kicks no longer redeclares them. To pull in a new Kuira module, add a
     // single line below — no AAR copy, no transitive bookkeeping.
-    implementation("com.midnight.kuira:dapp-ui:0.1.0-SNAPSHOT")
-    implementation("com.midnight.kuira:midnight-sdk:0.1.0-SNAPSHOT")
+    implementation("io.github.kuiralabs:dapp-ui:0.1.0-alpha01")
+    implementation("io.github.kuiralabs:midnight-sdk:0.1.0-alpha01")
     // Owns the one shared MidnightSdk + canonical WalletConfig. KicksActivity
     // is the config authority (it calls ensureSdk with the activity), MatchManager
     // is a follower (awaitSdk) — so Kicks runs a single SDK / single chain sync
     // instead of the panel + MatchManager each building their own.
-    implementation("com.midnight.kuira:wallet-runtime:0.1.0-SNAPSHOT")
+    implementation("io.github.kuiralabs:wallet-runtime:0.1.0-alpha01")
     // Still declared directly so Hilt resolves MidnightSdkProvider's
     // WalletSeedSource constructor param at Kicks's compile time (AAR
     // implementation deps are runtime-scoped for consumers).
-    implementation("com.midnight.kuira:wallet-seed:0.1.0-SNAPSHOT")
+    implementation("io.github.kuiralabs:wallet-seed:0.1.0-alpha01")
     // SDK uses `implementation(project(":core:*"))` so those types aren't
     // exposed to its consumers transitively. Kicks references compact types
     // directly (MidnightContract, MidnightConfig, WitnessResult) and the
     // network enum, so declare them here.
-    implementation("com.midnight.kuira:compact-engine:0.1.0-SNAPSHOT")
-    implementation("com.midnight.kuira:network:0.1.0-SNAPSHOT")
+    implementation("io.github.kuiralabs:compact-engine:0.1.0-alpha01")
+    implementation("io.github.kuiralabs:network:0.1.0-alpha01")
     // Hilt's compile-time annotation processor needs the types referenced
     // by `dapp-ui`'s `DappUiModule` on the compile classpath. dapp-ui
     // declares these as `implementation` (runtime scope in the POM), so
     // they're available at runtime via transitive resolution but invisible
     // to the consumer's compile classpath. Declare them explicitly here.
-    implementation("com.midnight.kuira:identity:0.1.0-SNAPSHOT")
-    implementation("com.midnight.kuira:auth:0.1.0-SNAPSHOT")
+    implementation("io.github.kuiralabs:identity:0.1.0-alpha01")
+    implementation("io.github.kuiralabs:auth:0.1.0-alpha01")
 
     // AndroidX directly used by Kicks's own code (FragmentActivity host,
     // Compose). Things Kuira pulls in transitively (biometric, credentials,
