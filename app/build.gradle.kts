@@ -3,49 +3,18 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.dagger.hilt.android")
     id("com.google.devtools.ksp")
+    // Syncs compiled penalty contract artifacts into the app's assets.
+    // Source of truth is contract/src/managed/penalty/, populated by
+    // `npm run compact` in contract/ (requires compactc matching the
+    // @midnight-ntwrk/compact-runtime version pinned in
+    // contract/package.json — currently 0.30.0 → runtime 0.15.0).
+    // The plugin wires the sync task into preBuild + fails fast if the
+    // contract hasn't been compiled.
+    id("com.midnight.kuira.contract") version "0.1.0-alpha01"
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Sync compiled penalty contract artifacts into the app's assets.
-// Source of truth is contract/src/managed/penalty/, populated by
-// `npm run compact` in the contract/ directory (requires compactc that
-// matches the @midnight-ntwrk/compact-runtime version pinned in
-// contract/package.json — currently 0.30.0 → runtime 0.15.0).
-//
-// We hook this into preBuild so any forgotten copy is caught at build
-// time. We do NOT run the compactc step from Gradle — TS toolchain
-// stays as the source of truth for that.
-// ─────────────────────────────────────────────────────────────────────
-val contractDir = rootProject.file("contract")
-val contractManaged = file("$contractDir/src/managed/penalty")
-val syncContractAssets = tasks.register<Copy>("syncContractAssets") {
-    description = "Copy compiled penalty contract artifacts into app assets."
-    group = "build"
-
-    from("$contractManaged/contract") {
-        include("index.js")
-        rename { "penalty-contract.js" }
-        into("runtime")
-    }
-    from("$contractManaged/keys") {
-        include("*.prover", "*.verifier")
-        into("keys")
-    }
-    from("$contractManaged/zkir") {
-        include("*.bzkir")
-        into("keys")
-    }
-    into("src/main/assets")
-
-    // Build fails fast (rather than later in the runtime) if the contract
-    // hasn't been compiled yet.
-    doFirst {
-        if (!contractManaged.exists()) {
-            throw GradleException(
-                "Contract not compiled at $contractManaged — run `npm run compact` in $contractDir first.",
-            )
-        }
-    }
+kuiraContract {
+    source.set("../contract/src/managed/penalty")
 }
 
 android {
@@ -100,8 +69,6 @@ android {
         }
     }
 }
-
-tasks.named("preBuild") { dependsOn(syncContractAssets) }
 
 dependencies {
     // Unity as a Library
