@@ -75,6 +75,29 @@ object UnityBridge {
         deliverToUnityPlayer(json.toString())
     }
 
+    /**
+     * main → `:unity`: the local player's kit and the contrasting opponent kit,
+     * applied by Unity's appearance scripts at kickoff (see ShooterAppearance /
+     * KeeperAppearance). Sent during the Unity-boot window, before the picker.
+     * Pure local cosmetics — none of this is on-chain. Uses [relayToUnity] since
+     * the caller (KicksActivity) runs in main, not `:unity`.
+     */
+    fun sendPlayerAppearance(playerName: String, playerKit: KitColors, opponentKit: KitColors) {
+        val json = JSONObject().apply {
+            put("type", "playerAppearance")
+            put("playerName", playerName)
+            put("player", kitToJson(playerKit))
+            put("opponent", kitToJson(opponentKit))
+        }
+        relayToUnity(json.toString())
+    }
+
+    private fun kitToJson(kit: KitColors): JSONObject = JSONObject().apply {
+        put("jersey", kit.jersey.toHex())
+        put("shorts", kit.shorts.toHex())
+        put("socks", kit.socks.toHex())
+    }
+
     // Status (waiting / proving / reconnecting / …) is no longer sent to Unity:
     // it's the Compose MatchHudOverlay + MatchStageOverlay, driven by MatchHud.
     // (The old sendStatus → Unity IMGUI label is gone.)

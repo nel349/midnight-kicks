@@ -27,11 +27,12 @@ public class ShooterAppearance : MonoBehaviour
     // so we can verify the pipeline is wiring up. Off in normal play.
     private static readonly bool ForcePaintAll = false;
 
-    // P1 Mexico-inspired home kit: green / white / red.
-    // Mexican flag colors: green #006847, red #CE1126.
-    private static readonly Color JerseyColor = new Color(0.000f, 0.408f, 0.278f); // #006847
-    private static readonly Color ShortsColor = new Color(0.960f, 0.960f, 0.960f); // off-white
-    private static readonly Color SocksColor  = new Color(0.808f, 0.067f, 0.149f); // #CE1126
+    // Kit colours — mutable so the Kotlin bridge can override them per match via
+    // [SetKit] (the player's chosen national kit). Defaults to a Mexico-inspired
+    // home strip until a playerAppearance message arrives.
+    private static Color JerseyColor = new Color(0.000f, 0.408f, 0.278f); // #006847
+    private static Color ShortsColor = new Color(0.960f, 0.960f, 0.960f); // off-white
+    private static Color SocksColor  = new Color(0.808f, 0.067f, 0.149f); // #CE1126
     private static readonly Color ShoesColor  = new Color(0.040f, 0.040f, 0.040f); // black boots
 
     // Skin / hair / eyes — the FBX shipped with no textures (diagnostic log
@@ -71,6 +72,29 @@ public class ShooterAppearance : MonoBehaviour
     }
 
     void Start()
+    {
+        Dress();
+    }
+
+    /// <summary>
+    /// Override the shooter's kit at runtime (Kotlin's playerAppearance bridge
+    /// message) and re-dress immediately if the Shooter is already in the scene;
+    /// otherwise the colours apply on the next dress. Local cosmetics only.
+    /// </summary>
+    public static void SetKit(Color jersey, Color shorts, Color socks)
+    {
+        JerseyColor = jersey;
+        ShortsColor = shorts;
+        SocksColor = socks;
+        var instance = FindAnyObjectByType<ShooterAppearance>();
+        if (instance != null) instance.Dress();
+    }
+
+    /// <summary>
+    /// Walk the Shooter's renderers and apply the current kit colours. Re-run by
+    /// [SetKit] when the kit changes at runtime; idempotent.
+    /// </summary>
+    public void Dress()
     {
         var shooter = GameObject.Find(ShooterObjectName);
         if (shooter == null)

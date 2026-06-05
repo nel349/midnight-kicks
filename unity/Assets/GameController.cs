@@ -83,6 +83,9 @@ public class GameController : MonoBehaviour
             case "replay":
                 StartReplay(jsonString);
                 break;
+            case "playerAppearance":
+                ApplyPlayerAppearance(jsonString);
+                break;
             // "status" removed: status is now the Compose HUD/stage (Kotlin no
             // longer sends it; sendStatus is gone).
             default:
@@ -119,6 +122,44 @@ public class GameController : MonoBehaviour
         inReplay = false;
 
         Debug.Log($"[GameController] Choice phase: round={currentRound}, picks={roundRoles.Length}, roles=[{string.Join(",", roundRoles)}]");
+    }
+
+    // ── Player appearance ──
+
+    /// <summary>
+    /// Dress the Shooter in the local player's chosen kit and the Keeper in the
+    /// contrasting opponent kit. Colours arrive as #RRGGBB hex in the Kotlin
+    /// `playerAppearance` message — purely local cosmetics, nothing on-chain.
+    /// Stored statically on the appearance scripts, so it survives a Shooter/
+    /// Keeper that hasn't spawned yet (applied on their next dress).
+    /// </summary>
+    private void ApplyPlayerAppearance(string json)
+    {
+        var msg = JsonUtility.FromJson<PlayerAppearanceMessage>(json);
+        if (msg == null || msg.player == null)
+        {
+            Debug.LogWarning("[GameController] playerAppearance: empty payload");
+            return;
+        }
+
+        if (TryParseKit(msg.player, out Color pj, out Color ps, out Color pk))
+        {
+            ShooterAppearance.SetKit(pj, ps, pk);
+            Debug.Log($"[GameController] Shooter kit ← {msg.playerName} (#{ColorUtility.ToHtmlStringRGB(pj)})");
+        }
+        if (msg.opponent != null && TryParseKit(msg.opponent, out Color oj, out Color os, out Color ok))
+        {
+            KeeperAppearance.SetKit(oj, os, ok);
+            Debug.Log($"[GameController] Keeper kit ← opponent (#{ColorUtility.ToHtmlStringRGB(oj)})");
+        }
+    }
+
+    private static bool TryParseKit(KitColorsJson kit, out Color jersey, out Color shorts, out Color socks)
+    {
+        bool ok = ColorUtility.TryParseHtmlString(kit.jersey, out jersey);
+        ok &= ColorUtility.TryParseHtmlString(kit.shorts, out shorts);
+        ok &= ColorUtility.TryParseHtmlString(kit.socks, out socks);
+        return ok;
     }
 
     // OnGUI removed: every in-match 2D element now lives in the Android Compose
@@ -311,6 +352,23 @@ public class ChoicePhaseMessage
     /// KEEP" and sizes its `choices` buffer from this array.
     /// </summary>
     public string[] roles;
+}
+
+[System.Serializable]
+public class PlayerAppearanceMessage
+{
+    public string type;
+    public string playerName;
+    public KitColorsJson player;
+    public KitColorsJson opponent;
+}
+
+[System.Serializable]
+public class KitColorsJson
+{
+    public string jersey; // #RRGGBB
+    public string shorts; // #RRGGBB
+    public string socks;  // #RRGGBB
 }
 
 [System.Serializable]

@@ -13,11 +13,15 @@ public class KeeperAppearance : MonoBehaviour
 {
     private const string KeeperObjectName = "Keeper";
 
-    // Jorge Campos 1994 World Cup — hot pink shirt, neon yellow shorts,
-    // hot pink socks. The most iconic goalkeeper kit in soccer history.
-    private static readonly Color JerseyColor = new Color(1.000f, 0.078f, 0.576f); // #FF1493 hot pink
-    private static readonly Color ShortsColor = new Color(0.949f, 0.902f, 0.000f); // #F2E600 neon yellow
-    private static readonly Color SocksColor  = new Color(1.000f, 0.078f, 0.576f); // #FF1493 hot pink
+    // Kit colours — mutable so the Kotlin bridge can dress the keeper as the
+    // contrasting OPPONENT kit via [SetKit]. Defaults to the iconic Jorge Campos
+    // 1994 strip (hot pink / neon yellow) until a playerAppearance message lands.
+    private static Color JerseyColor = new Color(1.000f, 0.078f, 0.576f); // #FF1493 hot pink
+    private static Color ShortsColor = new Color(0.949f, 0.902f, 0.000f); // #F2E600 neon yellow
+    private static Color SocksColor  = new Color(1.000f, 0.078f, 0.576f); // #FF1493 hot pink
+    // Once the bridge overrides the kit, the jersey switches from the procedural
+    // Campos texture to a flat opponent colour (a real nation's plain strip).
+    private static bool useFlatJersey = false;
     private static readonly Color ShoesColor  = new Color(0.040f, 0.040f, 0.040f); // black boots
 
     // The Acapulco-jersey supporting palette used by the procedural shirt
@@ -50,6 +54,31 @@ public class KeeperAppearance : MonoBehaviour
 
     void Start()
     {
+        Dress();
+    }
+
+    /// <summary>
+    /// Dress the keeper as the contrasting opponent kit (Kotlin's
+    /// playerAppearance bridge message): switches the jersey from the procedural
+    /// Campos texture to a flat opponent colour and re-dresses if the Keeper is
+    /// already in the scene. Local cosmetics only.
+    /// </summary>
+    public static void SetKit(Color jersey, Color shorts, Color socks)
+    {
+        JerseyColor = jersey;
+        ShortsColor = shorts;
+        SocksColor = socks;
+        useFlatJersey = true;
+        var instance = FindAnyObjectByType<KeeperAppearance>();
+        if (instance != null) instance.Dress();
+    }
+
+    /// <summary>
+    /// Walk the Keeper's renderers and apply the current kit. Re-run by [SetKit];
+    /// idempotent.
+    /// </summary>
+    public void Dress()
+    {
         var keeper = GameObject.Find(KeeperObjectName);
         if (keeper == null)
         {
@@ -81,7 +110,8 @@ public class KeeperAppearance : MonoBehaviour
                 // load and bind it as the shirt's _BaseMap.
                 if (slot == Slot.Jersey)
                 {
-                    ApplyShirtTexture(m);
+                    if (useFlatJersey) ApplyKitColor(m, JerseyColor);
+                    else ApplyShirtTexture(m);
                     dressed++;
                 }
                 else if (TryGetKitColor(slot, out Color color))

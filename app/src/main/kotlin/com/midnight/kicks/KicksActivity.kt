@@ -81,6 +81,10 @@ class KicksActivity : FragmentActivity() {
     // True if [store] has any active matches — surfaces the
     // RESUME MATCH affordance on the menu.
     private val hasActiveSession = mutableStateOf(false)
+    // Local-only player cosmetics (name / nation / kit). Loaded in onCreate,
+    // edited during the deploy wait, persisted on change, and sent to Unity at
+    // kickoff. Never on-chain.
+    private val playerProfile = mutableStateOf(PlayerProfile.DEFAULT)
 
     /**
      * Non-null while the abandon-match confirmation dialog is up
@@ -191,6 +195,7 @@ class KicksActivity : FragmentActivity() {
         // from any deep-link handling: even a cold launch with no intent
         // data should show the resume affordance if a session exists.
         hasActiveSession.value = store.loadAll().isNotEmpty()
+        playerProfile.value = PlayerProfileStore.load(this)
 
         handleDeepLink(intent)
 
@@ -224,6 +229,8 @@ class KicksActivity : FragmentActivity() {
                     address = s.address,
                     checking = creatingChecking.value,
                     statusMessage = creatingStatus.value,
+                    profile = playerProfile.value,
+                    onProfileChange = ::updatePlayerProfile,
                     onBack = { screen.value = KicksScreen.Menu },
                     onCheckStatus = ::checkCreateStatus,
                     onCancel = ::cancelCreateMatch,
@@ -762,6 +769,9 @@ class KicksActivity : FragmentActivity() {
             // activity's cancellation scope.
             lifecycleScope.launch {
                 delay(UNITY_BOOT_DELAY_MS)
+                // Apply the player's chosen kit (+ a contrasting opponent kit)
+                // now that the Unity scene is up.
+                sendPlayerAppearanceToUnity()
                 // Per-round role from this device's perspective. The
                 // contract's `i % 2 == 0 → P1 shoots` rule means P1 sees
                 // shoot/keep/shoot/keep/shoot and P2 sees keep/shoot/keep/
@@ -970,6 +980,26 @@ class KicksActivity : FragmentActivity() {
     private fun clearMenuStatus() {
         statusMessage.value = null
         lastChoices.value = null
+    }
+
+    /** Persist + reflect a player-profile edit from the customize card. */
+    private fun updatePlayerProfile(profile: PlayerProfile) {
+        playerProfile.value = profile
+        PlayerProfileStore.save(this, profile)
+    }
+
+    /**
+     * Ship the player's kit (and a contrasting opponent kit) to Unity at
+     * kickoff — local cosmetics only, applied by the appearance scripts once the
+     * scene is up. Called after [UNITY_BOOT_DELAY_MS].
+     */
+    private fun sendPlayerAppearanceToUnity() {
+        val profile = playerProfile.value
+        UnityBridge.sendPlayerAppearance(
+            playerName = profile.name,
+            playerKit = profile.kit,
+            opponentKit = contrastingOpponentKit(profile.kit),
+        )
     }
 
     /**
@@ -1197,6 +1227,7 @@ class KicksActivity : FragmentActivity() {
                 // [launchUnityChoicePhase] pays the same cost for the
                 // fresh-match path.
                 delay(UNITY_BOOT_DELAY_MS)
+                sendPlayerAppearanceToUnity()
 
                 val manager = matchManager ?: run {
                     Log.e(TAG, "resumeOrchestrator: manager not ready")

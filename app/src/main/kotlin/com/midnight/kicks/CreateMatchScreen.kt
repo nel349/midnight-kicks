@@ -10,7 +10,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -49,6 +53,8 @@ fun CreateMatchScreen(
     address: String?,
     checking: Boolean = false,
     statusMessage: String? = null,
+    profile: PlayerProfile,
+    onProfileChange: (PlayerProfile) -> Unit,
     onBack: () -> Unit,
     onCheckStatus: () -> Unit = {},
     onCancel: () -> Unit = {},
@@ -64,6 +70,7 @@ fun CreateMatchScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp, vertical = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Top,
@@ -73,14 +80,25 @@ fun CreateMatchScreen(
             Spacer(modifier = Modifier.height(48.dp))
 
             if (address == null) {
-                CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp)
-                Spacer(modifier = Modifier.height(20.dp))
-                Text(
-                    "Deploying contract…",
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = 14.sp,
-                    letterSpacing = 2.sp,
-                )
+                // Turn the deploy wait into "build your player": the contract
+                // lands in the background while the user picks name / nation /
+                // kit. The deploy status is a slim line, not a blocking spinner.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = Color.White.copy(alpha = 0.7f),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        "Deploying contract…",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 13.sp,
+                        letterSpacing = 2.sp,
+                    )
+                }
+                Spacer(modifier = Modifier.height(28.dp))
+                PlayerCustomizeCard(profile = profile, onProfileChange = onProfileChange)
             } else {
                 Text(
                     "SHARE WITH OPPONENT",
