@@ -132,6 +132,15 @@ class KicksActivity : FragmentActivity() {
     private var currentRole: Player? = null
 
     /**
+     * True while an off-chain QUICK PRACTICE match is in flight. Off-chain
+     * practice never builds the SDK / a MatchManager — [handleChoicesLocked]
+     * dispatches to [PracticeSimulator] instead of the on-chain orchestrator.
+     * Set in [launchQuickPractice]; cleared on every on-chain entry point and
+     * when returning to the menu, so a stale flag can't misroute a real match.
+     */
+    private var quickPracticeMode = false
+
+    /**
      * The role of the match that just finished, captured in [handleMatchResult]
      * before [currentRole] is cleared. The end screen's REMATCH lands back in
      * main as a `rematch` message AFTER the match is done, so [currentRole] is
@@ -222,6 +231,10 @@ class KicksActivity : FragmentActivity() {
                     onResumeMatch = {
                         clearMenuStatus()
                         resumeMatch()
+                    },
+                    onQuickPractice = {
+                        clearMenuStatus()
+                        launchQuickPractice()
                     },
                     onPracticeVsAi = {
                         clearMenuStatus()
@@ -770,6 +783,7 @@ class KicksActivity : FragmentActivity() {
     }
 
     private fun launchUnityChoicePhase() {
+        quickPracticeMode = false // on-chain entry — a stale practice flag must not linger
         ensureSdkReady {
             statusMessage.value = "Pick your 5 directions!"
             Log.i(TAG, "Launching Unity for choice phase...")
@@ -805,6 +819,27 @@ class KicksActivity : FragmentActivity() {
                 // collects, picks return via the same choicesLocked path.
                 MatchHud.showPicker(roles = roles, title = "Regulation")
             }
+        }
+    }
+
+    /**
+     * Off-chain QUICK PRACTICE entry. Unlike [launchUnityChoicePhase] it does
+     * NOT build the SDK or a MatchManager — no sigil, dust, proving, or chain.
+     * It boots Unity, shows the picker, and [handleChoicesLocked] runs the
+     * whole match locally via [PracticeSimulator]. Instant; nothing persisted.
+     */
+    private fun launchQuickPractice() {
+        quickPracticeMode = true
+        currentRole = null // human is P1 in the role pattern
+        statusMessage.value = "Pick your 5 directions!"
+        Log.i(TAG, "Launching Unity for QUICK PRACTICE (off-chain)…")
+        startActivity(Intent(this@KicksActivity, KicksMatchActivity::class.java))
+        lifecycleScope.launch {
+            delay(UNITY_BOOT_DELAY_MS)
+            sendPlayerAppearanceToUnity()
+            val roles = rolesForCurrentDevice()
+            currentChoiceRoles = roles
+            MatchHud.showPicker(roles = roles, title = "Practice")
         }
     }
 
@@ -1032,6 +1067,7 @@ class KicksActivity : FragmentActivity() {
     private fun handleEndToMenu() {
         MatchBridge.onUnityGone()
         MatchHud.reset()
+        quickPracticeMode = false // practice match (if any) is over
         hasActiveSession.value = store.loadAll().isNotEmpty()
         screen.value = KicksScreen.Menu
     }
@@ -1048,7 +1084,11 @@ class KicksActivity : FragmentActivity() {
         MatchHud.reset()
         clearMenuStatus()
         when (lastPlayedRole) {
-            null -> {
+            // null = AI match. quickPracticeMode (still set from the match that
+            // just ended) tells off-chain practice from an on-chain AI match.
+            null -> if (quickPracticeMode) {
+                launchQuickPractice()
+            } else {
                 currentRole = null
                 launchUnityChoicePhase()
             }
@@ -1058,6 +1098,28 @@ class KicksActivity : FragmentActivity() {
                 screen.value = KicksScreen.Joining()
             }
         }
+    }
+
+    /**
+     * Bucket Unity's interleaved 10 picks into shoots[5] + keeps[5] using the
+     * per-index role array we sent on the way out (role[i]=="shoot" → next
+     * shoots entry, else keeps). Legacy fallback: a pre-V3 Unity APK returns 5
+     * picks — reuse them as both shoots and keeps so the match still runs.
+     */
+    private fun bucketRolePicks(picks: IntArray, roles: List<String>): Pair<IntArray, IntArray> {
+        if (picks.size == roles.size && picks.size == 10) {
+            val s = mutableListOf<Int>()
+            val k = mutableListOf<Int>()
+            roles.forEachIndexed { i, role -> if (role == "shoot") s += picks[i] else k += picks[i] }
+            return s.toIntArray() to k.toIntArray()
+        }
+        Log.w(
+            TAG,
+            "choicesLocked returned ${picks.size} picks (expected 10). Unity APK is " +
+                "pre-V3 — re-export needed for the 10-pick flow. Falling back to shoots == keeps.",
+        )
+        val legacy = picks.copyOf(5)
+        return legacy to legacy.copyOf()
     }
 
     private fun handleChoicesLocked(json: JSONObject) {
@@ -1076,6 +1138,26 @@ class KicksActivity : FragmentActivity() {
         val sdDeferred = pendingSdPicks
         if (sdDeferred != null) {
             handleSdChoicesLocked(sdDeferred, choiceList.toIntArray())
+            return
+        }
+
+        // Off-chain QUICK PRACTICE — simulate the whole match locally with no
+        // SDK / MatchManager (the practice path never built one). Sudden death
+        // still prompts the player through the same SD picker (gatherSdPicksFromUi).
+        if (quickPracticeMode) {
+            orchestratorJob = lifecycleScope.launch {
+                try {
+                    val (shoots, keeps) = bucketRolePicks(choiceList.toIntArray(), currentChoiceRoles)
+                    Log.i(TAG, "practice choicesLocked: shoots=${shoots.toList()} keeps=${keeps.toList()}")
+                    val result = PracticeSimulator.simulate(shoots, keeps, getSdPicks = ::gatherSdPicksFromUi)
+                    handleMatchResult(result, deviceLabels = labels)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Practice match failed", e)
+                    statusMessage.value = "Practice failed: ${e.message}"
+                }
+            }
             return
         }
 
@@ -1101,32 +1183,11 @@ class KicksActivity : FragmentActivity() {
                 // hardcoded 5-pick gathering. Re-use the 5 picks as both
                 // shoots and keeps (degenerate but lets PvAI still run
                 // end-to-end) and log the mismatch so we know to re-export.
-                val picks  = choiceList.toIntArray()
-                val roles  = currentChoiceRoles
-                // Diagnostic — log the raw inputs to the bucketer so a tie
-                // pattern can be traced back to either (a) overlapping
-                // human picks, (b) a legacy 5-pick Unity APK, or (c) a
-                // role-mismatch between sent-to-Unity and applied-here.
-                // Always-on Log.i: these are public game inputs, no
-                // secret material.
-                Log.i(TAG, "choicesLocked-IN: role=${currentRole ?: "PvAI"} picks=${picks.toList()} roles=$roles")
-                val (shoots, keeps) = if (picks.size == roles.size && picks.size == 10) {
-                    val s = mutableListOf<Int>()
-                    val k = mutableListOf<Int>()
-                    roles.forEachIndexed { i, role ->
-                        if (role == "shoot") s += picks[i] else k += picks[i]
-                    }
-                    s.toIntArray() to k.toIntArray()
-                } else {
-                    Log.w(
-                        TAG,
-                        "choicesLocked returned ${picks.size} picks (expected 10). " +
-                            "Unity APK is pre-V3 — re-export needed for proper 10-pick flow. " +
-                            "Falling back to shoots == keeps.",
-                    )
-                    val legacy = picks.copyOf(5)
-                    legacy to legacy.copyOf()
-                }
+                // Diagnostic — log the raw inputs so a tie pattern can be traced
+                // back to overlapping human picks, a legacy 5-pick Unity APK, or
+                // a role-mismatch. Public game inputs, no secret material.
+                Log.i(TAG, "choicesLocked-IN: role=${currentRole ?: "PvAI"} picks=${choiceList} roles=$currentChoiceRoles")
+                val (shoots, keeps) = bucketRolePicks(choiceList.toIntArray(), currentChoiceRoles)
                 Log.i(TAG, "choicesLocked-OUT: shoots=${shoots.toList()} keeps=${keeps.toList()}")
 
                 val result = when (currentRole) {
@@ -1228,6 +1289,7 @@ class KicksActivity : FragmentActivity() {
      * for picks already committed.
      */
     private fun resumeOrchestrator(role: Player) {
+        quickPracticeMode = false // on-chain resume — never a practice match
         ensureSdkReady {
             statusMessage.value = "Resuming match…"
             val intent = Intent(this@KicksActivity, KicksMatchActivity::class.java)
@@ -1397,6 +1459,7 @@ fun KicksApp(
     onCreateMatch: () -> Unit,
     onJoinMatch: () -> Unit,
     onResumeMatch: () -> Unit,
+    onQuickPractice: () -> Unit,
     onPracticeVsAi: () -> Unit,
 ) {
     Surface(
@@ -1476,13 +1539,19 @@ fun KicksApp(
                     Spacer(modifier = Modifier.height(16.dp))
                     MenuButton("JOIN MATCH", onClick = onJoinMatch)
                     Spacer(modifier = Modifier.height(16.dp))
-                    // PvAI is a full on-chain match against a local AI opponent
-                    // (deploy → commit → reveal, same as PvP). A real but
-                    // visually-secondary button so it's easy to test while
-                    // two-device PvP E2E is being wired; hide behind a debug
-                    // build once that lands.
+                    // Off-chain instant practice — no contract, dust, or proving.
+                    // Same game (picker → AI → 3D replay), computed locally;
+                    // nothing is persisted, so there's nothing to resume.
                     KicksButton(
-                        label = "PRACTICE VS AI",
+                        label = "QUICK PRACTICE",
+                        onClick = onQuickPractice,
+                        style = KicksButtonStyle.Secondary,
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    // On-chain match against a local AI opponent (deploy →
+                    // commit → reveal, same as PvP) — real stakes + proofs.
+                    KicksButton(
+                        label = "VS AI · ON-CHAIN",
                         onClick = onPracticeVsAi,
                         style = KicksButtonStyle.Secondary,
                     )
