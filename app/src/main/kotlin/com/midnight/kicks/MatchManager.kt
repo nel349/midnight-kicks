@@ -606,8 +606,9 @@ open class MatchManager(
         // Rehydrate the AI from its dedicated slot — its key + witnesses must be
         // the exact ones that committed on chain so [resumeAgainstAi] can drive
         // the AI's reveal. Presence of [ai] is the PvAI discriminator on resume.
+        // Authoritative both ways so a PvP match can't inherit a stale isVsAi=true.
+        isVsAi = match.ai != null
         match.ai?.let { ai ->
-            isVsAi = true
             p2SecretKey = ai.secretKey.copyOf()
             ai.regulation?.let { reg ->
                 p2Shoots = reg.shoots.copyOf()
@@ -733,15 +734,13 @@ open class MatchManager(
         val deadline = BigInteger.valueOf(
             System.currentTimeMillis() / 1000 + COMMIT_DEADLINE_DURATION_SECS
         )
+        // Persist the AI key BEFORE the chain join — a kill in the join→persist
+        // window otherwise strands a PvAI match with ai=null (resume → hang).
+        isVsAi = true
+        updateCurrentMatch { it.copy(ai = MatchStore.AiState(secretKey = p2SecretKey.copyOf())) }
         retryUntilIndexerReady(JOIN_RETRY_LIMIT, JOIN_RETRY_DELAY_MS) {
             callCircuit(p2SecretKey, prev.address, "joinMatch", arrayOf(deadline))
         }
-        // This is a PvAI match — the AI joined from THIS device. Persist its
-        // secret key now so a resume after process death can drive the AI's
-        // reveal with the exact key that hashed into the on-chain commitment
-        // (it's otherwise regenerated random each session → reveal would fail).
-        isVsAi = true
-        updateCurrentMatch { it.copy(ai = MatchStore.AiState(secretKey = p2SecretKey.copyOf())) }
     }
 
     /**

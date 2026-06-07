@@ -263,7 +263,8 @@ class KicksActivity : FragmentActivity() {
                     role = s.role,
                     onBack = { screen.value = KicksScreen.Menu },
                     onContinue = {
-                        currentRole = s.role
+                        // PvAI resumes as role=P1 on chain but must DISPLAY as AI.
+                        currentRole = if (matchManager?.isVsAi == true) null else s.role
                         // Gate on state — resuming a match where picks
                         // are already committed must NOT re-launch the
                         // Unity choice phase. The resume orchestrator
@@ -1012,6 +1013,9 @@ class KicksActivity : FragmentActivity() {
         // re-enters via a different path.
         MatchHud.reset()
 
+        // Clear on exit too, else a stale flag misroutes the next on-chain match.
+        quickPracticeMode = false
+
         // A paused PvP match is still on disk → RESUME MATCH is the way back.
         // PvAI leaves nothing resumable. Surface whichever is true so the menu
         // copy matches the affordance the user actually has.
@@ -1149,6 +1153,16 @@ class KicksActivity : FragmentActivity() {
                     val (shoots, keeps) = bucketRolePicks(choiceList.toIntArray(), currentChoiceRoles)
                     Log.i(TAG, "practice choicesLocked: shoots=${shoots.toList()} keeps=${keeps.toList()}")
                     val result = PracticeSimulator.simulate(shoots, keeps, getSdPicks = ::gatherSdPicksFromUi)
+                    // Practice has no MatchManager to publish the end replay, so do
+                    // it here — drives the cinematic + result screen (REMATCH/MENU).
+                    val (p1, p2) = result.scores()
+                    MatchHud.publishReplay(
+                        MatchHud.ReplayShow(
+                            rounds = result.toRoundResults(),
+                            p1Score = p1,
+                            p2Score = p2,
+                        ),
+                    )
                     handleMatchResult(result, deviceLabels = labels)
                 } catch (e: CancellationException) {
                     throw e

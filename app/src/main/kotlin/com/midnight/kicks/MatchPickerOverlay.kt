@@ -89,20 +89,20 @@ fun MatchPickerOverlay() {
 @Composable
 private fun PickerContent(show: MatchHud.PickerShow) {
     val total = show.roles.size
-    // Per-round collection state; keyed on `show` so a fresh choice phase
-    // (new PickerShow instance) resets the picks + index.
-    val picks = remember(show) { IntArray(total) { -1 } }
-    var step by remember(show) { mutableIntStateOf(0) }
+    // Keyed on content (roles + title), not the PickerShow instance, so a re-push
+    // of the same round (resendCurrent on :unity rebind) doesn't reset picks/step.
+    val picks = remember(show.roles, show.title) { IntArray(total) { -1 } }
+    var step by remember(show.roles, show.title) { mutableIntStateOf(0) }
 
     // Grouped presentation: all SHOOT picks first, then all KEEP — the player
     // stays in one mindset instead of flip-flopping shoot/keep each round.
     // Picks are stored at their CANONICAL round index (order[step]), so the
     // contract bucketing downstream is unchanged — only the on-screen order
     // differs. Stable sort keeps each group's rounds in their natural order.
-    val order = remember(show) {
+    val order = remember(show.roles, show.title) {
         show.roles.indices.sortedBy { if (show.roles[it] == "shoot") 0 else 1 }
     }
-    val shootCount = remember(show) { show.roles.count { it == "shoot" } }
+    val shootCount = remember(show.roles, show.title) { show.roles.count { it == "shoot" } }
 
     // All picks in → submit through the legacy choicesLocked path + close.
     LaunchedEffect(show, step) {
