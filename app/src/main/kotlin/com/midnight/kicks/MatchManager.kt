@@ -3,6 +3,7 @@ package com.midnight.kicks
 import android.content.Context
 import android.util.Log
 import com.midnight.kuira.core.compact.BalanceProgress
+import androidx.compose.ui.graphics.toArgb
 import com.midnight.kuira.core.compact.ContractCallStage
 import com.midnight.kuira.core.compact.MidnightContract
 import com.midnight.kuira.core.compact.WitnessKind
@@ -693,7 +694,7 @@ open class MatchManager(
     internal open suspend fun executeDeploy(secretKey: ByteArray): String {
         val verifierKeys = loadVerifierKeys()
         val contract = createContractHandle(secretKey, address = null, verifierKeys = verifierKeys)
-        val deploy = contract.deploy { stage -> Log.d(TAG, "deploy: ${stage.javaClass.simpleName}") }
+        val deploy = contract.deploy(onProgress = stageReporter("deploy"))
         return deploy.contractAddress
     }
 
@@ -2516,8 +2517,26 @@ open class MatchManager(
      */
     private fun stageReporter(circuitName: String): (ContractCallStage) -> Unit = { stage ->
         Log.d(TAG, "$circuitName: ${stage.javaClass.simpleName}")
-        MatchHud.publishSecondary(formatContractCallStage(stage))
+        MatchHud.publishSecondary(
+            formatContractCallStage(stage),
+            contractCallProgress(stage),
+            submissionAccentArgb(circuitName),
+        )
     }
+
+    /**
+     * Per-submission accent (ARGB) so deploy / join / commit / reveal / claim each
+     * read as a distinct colour while sharing the *identical* staged progress bar.
+     * Carried to the overlay via [MatchHud]; deploy was previously the only
+     * submission with no reporter at all, which made the bar appear inconsistent.
+     */
+    private fun submissionAccentArgb(circuitName: String): Int = when {
+        circuitName == "deploy" -> KicksColors.Accent          // blue — creating the match
+        circuitName == "joinMatch" -> KicksColors.Picking      // teal — joining
+        circuitName.startsWith("commit") -> KicksColors.Pending // amber — locking picks
+        circuitName.startsWith("reveal") -> KicksColors.SuccessBright // green — revealing
+        else -> KicksColors.Warning                            // claimTimeout / cancelMatch
+    }.toArgb()
 
     /**
      * Single contract-handle factory. Always registers every witness — the
@@ -2964,10 +2983,11 @@ internal fun formatContractCallStage(stage: ContractCallStage): String? = when (
     is ContractCallStage.Executing -> "Building transaction…"
     is ContractCallStage.Proving -> "Generating zero-knowledge proof…"
     is ContractCallStage.Balancing -> "Balancing dust fee…"
-    is ContractCallStage.BalancingDetail -> when (val progress = stage.progress) {
+    is ContractCallStage.BalancingDetail -> when (stage.progress) {
         is BalanceProgress.SyncingDust -> "Syncing dust wallet…"
-        is BalanceProgress.SyncingDustProgress ->
-            "Syncing dust (${progress.eventsProcessed}/${progress.totalEvents})…"
+        // Raw event counts (and the -1 "not started" sentinel) are meaningless
+        // to the player — the bar conveys progress; the line stays human.
+        is BalanceProgress.SyncingDustProgress -> "Syncing dust wallet…"
         is BalanceProgress.ProvingDust -> "Proving dust payment…"
         is BalanceProgress.Submitting -> "Submitting to chain…"
         is BalanceProgress.WaitingFinalization -> "Waiting for block finalization…"
@@ -2976,4 +2996,36 @@ internal fun formatContractCallStage(stage: ContractCallStage): String? = when (
             "Recovering dust balance — this can take a moment…"
     }
     is ContractCallStage.Submitting -> "Submitting to chain…"
+}
+
+/**
+ * Maps a circuit-call [stage] to a 0..1 progress value for the stage bar.
+ *
+ * Bands are weighted by typical duration, not evenly — proving is near-instant
+ * while finalization dominates, so finalization sits near-full (the bar would
+ * otherwise stall there and read as a hang). The dust-sync sub-progress fills
+ * its own band so the player sees smooth motion without raw event counts. The
+ * bar is clamped monotonic in the overlay, so retry/recovery stages reporting a
+ * lower value never make it visibly retreat.
+ */
+internal fun contractCallProgress(stage: ContractCallStage): Float = when (stage) {
+    is ContractCallStage.FetchingState -> 0.08f
+    is ContractCallStage.Executing -> 0.15f
+    is ContractCallStage.Proving -> 0.30f
+    is ContractCallStage.Balancing -> 0.35f
+    is ContractCallStage.BalancingDetail -> when (val p = stage.progress) {
+        is BalanceProgress.SyncingDust -> 0.40f
+        is BalanceProgress.SyncingDustProgress -> {
+            val frac = if (p.totalEvents > 0) {
+                (p.eventsProcessed.toFloat() / p.totalEvents).coerceIn(0f, 1f)
+            } else 0f
+            0.40f + frac * 0.15f // 0.40 → 0.55 within the dust-sync band
+        }
+        is BalanceProgress.ProvingDust -> 0.62f
+        is BalanceProgress.Submitting -> 0.72f
+        is BalanceProgress.WaitingFinalization -> 0.90f
+        is BalanceProgress.RetryingDustSync -> 0.40f
+        is BalanceProgress.RecoveringDustState -> 0.50f
+    }
+    is ContractCallStage.Submitting -> 0.80f
 }

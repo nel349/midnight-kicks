@@ -73,6 +73,18 @@ object MatchHud {
     data class HudState(
         val primary: String? = null,
         val secondary: String? = null,
+        /**
+         * Tx-in-flight progress in 0..1 for the stage bar, or null when there's
+         * no determinate progress to show. Published alongside [secondary] from
+         * the circuit-call stage stream; reset on every primary transition.
+         */
+        val progress: Float? = null,
+        /**
+         * Accent (ARGB) for the in-flight stage UI, so each submission type
+         * (deploy / commit / reveal / …) tints its progress bar distinctly.
+         * Null falls back to the mode's default accent.
+         */
+        val accentArgb: Int? = null,
         val mode: Mode = Mode.IDLE,
         val sessionEpochMs: Long = 0L,
         /**
@@ -212,7 +224,8 @@ object MatchHud {
      * when the circuit call completes / fails, so the overlay drops the
      * sub-line and falls back to whatever the primary mode dictates.
      */
-    fun publishSecondary(text: String?) = setSecondary(text, relay = true)
+    fun publishSecondary(text: String?, progress: Float? = null, accentArgb: Int? = null) =
+        setSecondary(text, progress, accentArgb, relay = true)
 
     /**
      * Flag/clear "indexer unreachable". Driven by [MatchManager] off the
@@ -273,7 +286,7 @@ object MatchHud {
         val s = _state.value
         if (s.primary != null) {
             setPrimary(s.primary, s.mode, s.role, s.sessionEpochMs, relay = true)
-            if (s.secondary != null) setSecondary(s.secondary, relay = true)
+            if (s.secondary != null) setSecondary(s.secondary, s.progress, s.accentArgb, relay = true)
         }
         _replay.value?.let { setReplay(it.show, it.publishedAtMs, relay = true) }
         _picker.value?.let { setPicker(it, relay = true) }
@@ -297,6 +310,8 @@ object MatchHud {
             )
             EV_SECONDARY -> setSecondary(
                 text = if (o.isNull("secondary")) null else o.getString("secondary"),
+                progress = if (o.isNull("progress")) null else o.getDouble("progress").toFloat(),
+                accentArgb = if (o.isNull("accentArgb")) null else o.getInt("accentArgb"),
                 relay = false,
             )
             EV_REPLAY -> setReplay(
@@ -318,8 +333,10 @@ object MatchHud {
         _state.value = _state.value.copy(
             primary = label,
             // A state transition implicitly ends whatever tx-in-flight detail
-            // was being shown, so drop the sub-line.
+            // was being shown, so drop the sub-line + its progress.
             secondary = null,
+            progress = null,
+            accentArgb = null,
             mode = mode,
             sessionEpochMs = epoch,
             role = role,
@@ -335,12 +352,14 @@ object MatchHud {
         )
     }
 
-    private fun setSecondary(text: String?, relay: Boolean) {
-        _state.value = _state.value.copy(secondary = text)
+    private fun setSecondary(text: String?, progress: Float?, accentArgb: Int?, relay: Boolean) {
+        _state.value = _state.value.copy(secondary = text, progress = progress, accentArgb = accentArgb)
         if (relay) relayHook?.invoke(
             JSONObject().apply {
                 put(EV, EV_SECONDARY)
                 put("secondary", text ?: JSONObject.NULL)
+                put("progress", progress?.toDouble() ?: JSONObject.NULL)
+                put("accentArgb", accentArgb ?: JSONObject.NULL)
             }.toString()
         )
     }

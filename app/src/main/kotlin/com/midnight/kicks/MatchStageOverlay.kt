@@ -1,9 +1,11 @@
 package com.midnight.kicks
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -13,15 +15,19 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -86,6 +92,11 @@ fun MatchStageOverlay() {
         StageContent(
             primary = if (reconnecting) "Reconnecting to the network…" else state.primary.orEmpty(),
             secondary = state.secondary,
+            // Only show the determinate bar for a tx in flight — not while
+            // reconnecting (the wait is indeterminate) or waiting on the opponent.
+            progress = if (state.mode == MatchHud.Mode.TX_IN_FLIGHT && !reconnecting) state.progress else null,
+            progressResetKey = state.sessionEpochMs,
+            accentArgb = state.accentArgb,
             waiting = waiting && !reconnecting,
             reconnecting = reconnecting,
             elapsedSeconds = elapsed,
@@ -97,6 +108,9 @@ fun MatchStageOverlay() {
 private fun StageContent(
     primary: String,
     secondary: String?,
+    progress: Float?,
+    progressResetKey: Long,
+    accentArgb: Int?,
     waiting: Boolean,
     reconnecting: Boolean,
     elapsedSeconds: Int,
@@ -104,7 +118,8 @@ private fun StageContent(
     val accent = when {
         reconnecting -> KicksColors.Danger    // red — network down
         waiting -> KicksColors.Pending         // amber — opponent's move
-        else -> KicksColors.Accent             // blue — tx in flight
+        // tx in flight — tint per submission (deploy/commit/reveal) when provided.
+        else -> accentArgb?.let { Color(it) } ?: KicksColors.Accent
     }
 
     // Breathing ball: scale + alpha pulse so the screen is alive during the
@@ -179,6 +194,45 @@ private fun StageContent(
                     letterSpacing = 0.5.sp,
                 )
             }
+            if (progress != null) {
+                Spacer(Modifier.height(18.dp))
+                StageProgressBar(target = progress, resetKey = progressResetKey, accent = accent)
+            }
         }
+    }
+}
+
+/**
+ * Slim determinate progress bar for a tx in flight, fed by the circuit-call
+ * stage stream. Clamped monotonic (never retreats on a retry/recovery stage
+ * that reports a lower value) and reset per wait via [resetKey]; the fill eases
+ * smoothly between stage jumps so it reads as steady forward motion.
+ */
+@Composable
+private fun StageProgressBar(target: Float, resetKey: Long, accent: Color) {
+    var peak by remember(resetKey) { mutableFloatStateOf(0f) }
+    LaunchedEffect(target, resetKey) {
+        val t = target.coerceIn(0f, 1f)
+        if (t > peak) peak = t
+    }
+    val animated by animateFloatAsState(
+        targetValue = peak,
+        animationSpec = tween(450, easing = FastOutSlowInEasing),
+        label = "stageProgress",
+    )
+    Box(
+        modifier = Modifier
+            .fillMaxWidth(0.62f)
+            .height(6.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(Color.White.copy(alpha = 0.14f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(animated.coerceIn(0f, 1f))
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(3.dp))
+                .background(accent),
+        )
     }
 }
