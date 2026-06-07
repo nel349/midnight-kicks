@@ -662,7 +662,7 @@ class KicksActivity : FragmentActivity() {
      * Lazy-init the [MatchManager] and bind its StateFlows to the UI.
      * Re-entrant: subsequent calls are no-ops once [matchManager] is set.
      */
-    private fun ensureSdkReady(onReady: () -> Unit) {
+    private fun ensureSdkReady(autoResume: Boolean = false, onReady: () -> Unit) {
         lifecycleScope.launch {
             try {
                 // Reconcile the shared SDK to the user's CURRENT network on EVERY
@@ -710,17 +710,16 @@ class KicksActivity : FragmentActivity() {
                         }
                     }
                     manager.initSdk()
-                    // After initSdk lands in SdkReady, try to resume any
-                    // active match the user left behind on a prior kill.
-                    // Returns the resumed contract address (and transitions
-                    // the state machine into the right MatchState) when
-                    // there was something to resume; null on a fresh launch.
-                    val resumedAddress = manager.tryResumeActiveMatch()
-                    // ensureSdkReady is called lazily by every flow
-                    // (CREATE, JOIN, deep link, RESUME-picker tap), not
-                    // just at app launch. If the user has already
-                    // initiated a different action (screen past Menu),
-                    // do NOT clobber it with auto-resume routing.
+                    // Auto-resume is OPT-IN ([autoResume]) — a genuine app
+                    // bootstrap, never an explicit fresh-match action. Without
+                    // this gate, tapping VS AI · ON-CHAIN (which leaves the
+                    // screen on Menu) hijacked the tap into the user's prior
+                    // match — resuming the old "your picks revealed" state AND
+                    // showing the fresh picker at once. CREATE/JOIN set their
+                    // screen first so they were already immune; this makes the
+                    // immunity explicit and uniform. Resume stays available via
+                    // the RESUME MATCH button (resumeMatch → Resume picker).
+                    val resumedAddress = if (autoResume) manager.tryResumeActiveMatch() else null
                     val screenIsMenu = screen.value is KicksScreen.Menu
                     if (resumedAddress != null && screenIsMenu) {
                         Log.i(TAG, "Resumed active match: $resumedAddress")
@@ -729,7 +728,7 @@ class KicksActivity : FragmentActivity() {
                             role = store.load(resumedAddress)?.role,
                             state = manager.state.value,
                         )
-                    } else if (resumedAddress == null && store.loadAll().size > 1 && screenIsMenu) {
+                    } else if (autoResume && resumedAddress == null && store.loadAll().size > 1 && screenIsMenu) {
                         // tryResumeActiveMatch returns null for multi-match
                         // stores — defer to the Resume picker so the
                         // user chooses explicitly instead of bouncing
@@ -737,7 +736,7 @@ class KicksActivity : FragmentActivity() {
                         Log.i(TAG, "Multiple stored matches — routing to Resume picker")
                         statusMessage.value = "Pick a match to resume."
                         screen.value = KicksScreen.Resume
-                    } else if (!screenIsMenu) {
+                    } else if (autoResume && !screenIsMenu) {
                         Log.i(TAG, "Bootstrap auto-resume skipped — user is on ${screen.value::class.simpleName}")
                     }
                     // Surface a "your prior match finished" banner when
