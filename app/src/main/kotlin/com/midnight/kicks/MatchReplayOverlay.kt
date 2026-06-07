@@ -13,8 +13,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -148,7 +150,7 @@ private fun ReplayBody(
                 // binary without the per-kick emit (pre-re-export) shows nothing
                 // here rather than a frozen 0-0 — clean degradation either way.
                 if (revealedKicks > 0) {
-                    LiveScoreChip(
+                    LiveScoreboard(
                         rounds = replay.rounds,
                         revealed = revealedKicks,
                         localRole = localRole,
@@ -178,55 +180,87 @@ private fun ReplayBody(
 }
 
 /**
- * A small corner pill showing the score climbing live as kicks land — from THIS
- * device's side ([localRole]; null = PvAI, you're P1). Counts goals in the
- * [revealed] prefix of [rounds]; non-blocking so the 3D action stays clear.
+ * Live match-style scoreboard shown over the cinematic: one row per side, each
+ * with the running tally plus a strip of per-shot boxes — green ✓ for a scored
+ * penalty, red ✕ for a saved/missed one, dim/empty for kicks not yet taken.
+ * Boxes fill in as kicks land ([revealed] = how many of [rounds] have resolved),
+ * mirroring how a real broadcast tracks a shootout. Framed from THIS device's
+ * side ([localRole]; null = PvAI, you're P1).
  */
 @Composable
-private fun LiveScoreChip(
+private fun LiveScoreboard(
     rounds: List<RoundResult>,
     revealed: Int,
     localRole: Player?,
     modifier: Modifier,
 ) {
-    var p1 = 0
-    var p2 = 0
-    for (i in 0 until revealed.coerceAtMost(rounds.size)) {
-        val r = rounds[i]
-        if (r.result == "goal") {
-            if (r.shooter == "P1") p1 += 1 else p2 += 1
-        }
-    }
     val isP2 = localRole == Player.P2
-    val mine = if (isP2) p2 else p1
-    val theirs = if (isP2) p1 else p2
+    val mineTag = if (isP2) "P2" else "P1"
+    val theirsTag = if (isP2) "P1" else "P2"
     val themLabel = if (localRole == null) "AI" else "OPP"
 
-    Row(
+    // Each side's kicks in kicking order, tagged with whether they've been
+    // revealed yet (original index < revealed) and whether they scored.
+    fun marksFor(tag: String): List<ShotMark> =
+        rounds.withIndex()
+            .filter { it.value.shooter == tag }
+            .map { (i, r) -> ShotMark(revealed = i < revealed, goal = r.result == "goal") }
+
+    val mine = marksFor(mineTag)
+    val theirs = marksFor(theirsTag)
+
+    Column(
         modifier = modifier
-            .clip(RoundedCornerShape(percent = 50))
+            .clip(RoundedCornerShape(12.dp))
             .background(KicksColors.BannerScrim)
-            .padding(horizontal = 16.dp, vertical = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        ChipScore(label = "YOU", score = mine, accent = KicksColors.SuccessBright)
-        Text("–", color = Color.White.copy(alpha = 0.4f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        ChipScore(label = themLabel, score = theirs, accent = KicksColors.Danger)
+        ScoreboardRow(label = "YOU", marks = mine, accent = KicksColors.SuccessBright)
+        ScoreboardRow(label = themLabel, marks = theirs, accent = KicksColors.Danger)
     }
 }
 
+private data class ShotMark(val revealed: Boolean, val goal: Boolean)
+
 @Composable
-private fun ChipScore(label: String, score: Int, accent: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+private fun ScoreboardRow(label: String, marks: List<ShotMark>, accent: Color) {
+    val score = marks.count { it.revealed && it.goal }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Text(
             text = label,
             color = accent,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.sp,
-            modifier = Modifier.padding(horizontal = 6.dp),
+            modifier = Modifier.width(30.dp),
         )
-        Text(text = "$score", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Black)
+        Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            marks.forEachIndexed { idx, m ->
+                // Visual gap between regulation (first 5) and sudden death.
+                if (idx == REGULATION_KICKS_PER_PLAYER) Spacer(Modifier.width(4.dp))
+                ShotPip(m)
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(text = "$score", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Black)
+    }
+}
+
+@Composable
+private fun ShotPip(mark: ShotMark) {
+    val box = Modifier.size(15.dp).clip(RoundedCornerShape(4.dp))
+    when {
+        !mark.revealed -> Box(box.border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(4.dp)))
+        mark.goal -> Box(box.background(KicksColors.Success), contentAlignment = Alignment.Center) {
+            Text("✓", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
+        }
+        else -> Box(box.background(KicksColors.Danger), contentAlignment = Alignment.Center) {
+            Text("✕", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
+        }
     }
 }
 
