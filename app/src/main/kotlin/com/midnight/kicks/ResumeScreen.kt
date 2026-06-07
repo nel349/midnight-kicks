@@ -147,10 +147,16 @@ private fun MatchRow(
     onClick: () -> Unit,
     onAbandon: () -> Unit,
 ) {
-    val roleColor = when (match.role) {
-        Player.P1 -> KicksColors.AccentBright
-        Player.P2 -> KicksColors.SuccessBright
+    // A PvAI match persists an [ai] slot; PvP doesn't. Use it to badge the row
+    // "VS AI" in a distinct colour so practice-vs-AI is obvious next to PvP
+    // rows, which keep their P1/P2 creator-vs-joiner badge.
+    val isAi = match.ai != null
+    val badgeColor = when {
+        isAi -> KicksColors.Pending
+        match.role == Player.P1 -> KicksColors.AccentBright
+        else -> KicksColors.SuccessBright
     }
+    val badgeLabel = if (isAi) "VS AI" else match.role.name
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -176,13 +182,13 @@ private fun MatchRow(
             // across rows when both P1 and P2 matches coexist.
             Box(
                 modifier = Modifier
-                    .background(roleColor.copy(alpha = 0.20f), shape = RoundedCornerShape(7.dp))
-                    .border(1.dp, roleColor.copy(alpha = 0.45f), RoundedCornerShape(7.dp))
+                    .background(badgeColor.copy(alpha = 0.20f), shape = RoundedCornerShape(7.dp))
+                    .border(1.dp, badgeColor.copy(alpha = 0.45f), RoundedCornerShape(7.dp))
                     .padding(horizontal = 9.dp, vertical = 5.dp),
             ) {
                 Text(
-                    text = match.role.name,
-                    color = roleColor,
+                    text = badgeLabel,
+                    color = badgeColor,
                     fontSize = 11.sp,
                     letterSpacing = 2.sp,
                     fontWeight = FontWeight.Bold,
