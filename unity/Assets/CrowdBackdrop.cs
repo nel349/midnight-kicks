@@ -15,23 +15,28 @@ public class CrowdBackdrop : MonoBehaviour
 {
     private const string CrowdTextureResource = "StadiumCrowd";
 
-    // ── Wall placement ──
-    // Goal line is at z=9.5; wall sits ~8m behind that. From the camera at
-    // (0, 4.5, -13) the wall is ~30.5m forward and ~56m wide at frame edges
-    // (FOV 55° vertical, 16:9 → ~86° horizontal). Wall extends past that so
-    // the green pitch never shows behind the goal at the frame edges.
-    private const float WallZ = 17.5f;
-    private const float WallWidth = 80f;
-    private const float WallHeight = 30f;
-    private const float WallBaseY = 0f;
-
-    // ── Texture tiling ──
-    // Lower tiling = bigger per-spectator pixels = more visible detail per
-    // face. 1.5 keeps the image wider than the wall (so the wall doesn't
-    // show repeating seams in the camera frame) while letting each
-    // spectator render at ~2× the previous resolution.
-    private const float TilingU = 1.5f;
-    private const float TilingV = 1f;
+    // ── Curved crowd arc ──
+    // The backdrop is a cylinder segment centred on the CAMERA's XZ position, so
+    // every spectator sits at the same distance from the view and the crowd wraps
+    // the whole frame with no visible flat edge — even at ultra-wide aspect or an
+    // angled camera (a flat wall showed its left edge + blue sky past it). The
+    // seamless 4:1 StadiumCrowd panorama maps once across the arc.
+    //
+    // Tunables (adjust to taste, then re-export Unity):
+    //   Radius           — distance of the crowd from the view (≈ old wall depth).
+    //   ArcHalfDegrees    — half the sweep each side of straight-ahead.
+    //   WallHeight/BaseY  — vertical extent + floor of the stands.
+    private const float CameraZ = -13f;        // match camera sits at (0, 4.5, -13)
+    private const float Radius = 32f;          // ≈ old flat-wall distance → keeps spectator size
+    private const float ArcHalfDegrees = 80f;  // 160° total sweep — covers ultra-wide / angled views
+    private const int Segments = 48;           // arc smoothness
+    // ~160° arc at R=32 is ≈89m long. Height/base tuned so the camera frames
+    // the crowd, not the pitch-edge lip at the bottom of the panorama texture.
+    // UVBottom crops the bottom few % of the texture (transition band); BaseY
+    // sinks that band below the grass plane so the visible arc is all stands.
+    private const float WallHeight = 28f;
+    private const float WallBaseY = -2f;
+    private const float UVBottom = 0.05f;
 
     private static readonly Color FallbackTint = new Color(0.22f, 0.26f, 0.32f, 1f);
 
@@ -59,36 +64,41 @@ public class CrowdBackdrop : MonoBehaviour
 
     private void BuildWall(Texture2D crowdTex)
     {
-        // Build a flat quad facing -Z (toward the camera/field). Geometry is
-        // double-sided (two triangles per side) so it renders regardless of
-        // shader culling settings — no more invisible-back-face surprises.
-        float halfW = WallWidth * 0.5f;
-        var mesh = new Mesh { name = "CrowdWall" };
+        // Build a curved strip: an arc of [Segments] quads sweeping from
+        // -ArcHalfDegrees to +ArcHalfDegrees around the camera's XZ position, at
+        // constant [Radius]. Double-sided so it's visible from inside regardless
+        // of shader culling. The seamless panorama maps once (U: 0→1 across the
+        // arc, V: 0→1 bottom→top).
+        var mesh = new Mesh { name = "CrowdArc" };
 
-        var vertices = new Vector3[]
+        int cols = Segments + 1;
+        var vertices = new Vector3[cols * 2];
+        var uvs = new Vector2[cols * 2];
+        float halfRad = ArcHalfDegrees * Mathf.Deg2Rad;
+        for (int i = 0; i < cols; i++)
         {
-            new Vector3(-halfW, WallBaseY,              0f),   // 0: bottom-left
-            new Vector3( halfW, WallBaseY,              0f),   // 1: bottom-right
-            new Vector3( halfW, WallBaseY + WallHeight, 0f),   // 2: top-right
-            new Vector3(-halfW, WallBaseY + WallHeight, 0f),   // 3: top-left
-        };
-        var uvs = new Vector2[]
+            float t = (float)i / Segments;               // 0..1 across the arc
+            float a = Mathf.Lerp(-halfRad, halfRad, t);
+            float x = Mathf.Sin(a) * Radius;
+            float z = CameraZ + Mathf.Cos(a) * Radius;
+            vertices[i] = new Vector3(x, WallBaseY, z);                       // bottom row
+            vertices[cols + i] = new Vector3(x, WallBaseY + WallHeight, z);   // top row
+            uvs[i] = new Vector2(t, UVBottom);
+            uvs[cols + i] = new Vector2(t, 1f);
+        }
+
+        // Two triangles per segment, emitted in both windings (front + back) so
+        // the inside-facing arc always renders.
+        var triangles = new int[Segments * 12];
+        int ti = 0;
+        for (int i = 0; i < Segments; i++)
         {
-            new Vector2(0f,      0f),
-            new Vector2(TilingU, 0f),
-            new Vector2(TilingU, TilingV),
-            new Vector2(0f,      TilingV),
-        };
-        // Two triangles facing -Z (front, toward camera) + two facing +Z (back).
-        // Front: 0→2→1, 0→3→2
-        // Back:  0→1→2, 0→2→3   (reverse winding)
-        var triangles = new int[]
-        {
-            0, 2, 1,
-            0, 3, 2,
-            0, 1, 2,
-            0, 2, 3,
-        };
+            int bl = i, br = i + 1, tl = cols + i, tr = cols + i + 1;
+            triangles[ti++] = bl; triangles[ti++] = tl; triangles[ti++] = br;
+            triangles[ti++] = br; triangles[ti++] = tl; triangles[ti++] = tr;
+            triangles[ti++] = bl; triangles[ti++] = br; triangles[ti++] = tl;
+            triangles[ti++] = br; triangles[ti++] = tr; triangles[ti++] = tl;
+        }
 
         mesh.vertices = vertices;
         mesh.uv = uvs;
@@ -96,10 +106,10 @@ public class CrowdBackdrop : MonoBehaviour
         mesh.RecalculateNormals();
         mesh.RecalculateBounds();
 
-        var child = new GameObject("CrowdWall");
+        var child = new GameObject("CrowdArc");
         child.transform.SetParent(transform, worldPositionStays: false);
-        child.transform.position = new Vector3(0f, 0f, WallZ);
-        // Quad lives in the XY plane by construction; it already faces -Z.
+        // Vertices are already baked in world space (centred on the camera XZ).
+        child.transform.position = Vector3.zero;
 
         var mf = child.AddComponent<MeshFilter>();
         mf.sharedMesh = mesh;
