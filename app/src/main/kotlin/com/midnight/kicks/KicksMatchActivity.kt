@@ -19,6 +19,8 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
@@ -211,6 +213,17 @@ class KicksMatchActivity : UnityPlayerGameActivity() {
                 // When the replay isn't showing, the Box has nothing
                 // to draw beyond the HUD itself.
                 Box(modifier = Modifier.fillMaxSize()) {
+                    // Keep this overlay window's frame loop alive from window
+                    // creation. On-chain matches get this for free — MatchManager
+                    // continuously publishes HUD updates that animate the overlay
+                    // — but off-chain practice publishes nothing, so the window
+                    // would idle and the OS throttles its frames, freezing the
+                    // picker (taps mutate state but don't repaint). A continuous
+                    // frame request, started before the window can idle, keeps it
+                    // drawing live regardless of whether a MatchManager is active.
+                    LaunchedEffect(Unit) {
+                        while (true) withFrameNanos { }
+                    }
                     // Full-screen wait "stage" (covers Unity's idle label +
                     // masks the commit/reveal wait). Bottom of the stack — the
                     // phase overlays below are mutually exclusive with it.
