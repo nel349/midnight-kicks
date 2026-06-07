@@ -13,6 +13,7 @@ public class ShotManager : MonoBehaviour
 
     // ── Result keys (must match JSON payload from Kotlin's MatchManager) ──
     private const string ResultGoal = "goal";
+    private const string ResultSave = "save";
 
     // ── Scene lookup ──
     private const string ShooterObjectName = "Shooter";
@@ -77,16 +78,73 @@ public class ShotManager : MonoBehaviour
     // wears the local vs opponent kit each round. Defaults to P1 (PvAI / editor).
     private string localSide = "P1";
 
+    void Start()
+    {
+        Debug.Log("[ShotManager] Editor test keys — T: single goal · Y: single save · " +
+                  "U: full 10-kick shootout · I: all saves · O: all goals");
+    }
+
     void Update()
     {
-        // Debug: press T to test a single goal replay in Editor
-        if (Keyboard.current != null && Keyboard.current.tKey.wasPressedThisFrame && !isPlaying)
+        // Editor test scenarios (keyboard). No keyboard on a phone, so these are
+        // inert in a device build — `Keyboard.current` is null there.
+        if (isPlaying || Keyboard.current == null) return;
+
+        if (Keyboard.current.tKey.wasPressedThisFrame)
+            StartCoroutine(PlayReplay(ScenarioSingle(goal: true), "P1", null, null));
+        else if (Keyboard.current.yKey.wasPressedThisFrame)
+            StartCoroutine(PlayReplay(ScenarioSingle(goal: false), "P1", null, null));
+        else if (Keyboard.current.uKey.wasPressedThisFrame)
+            StartCoroutine(PlayReplay(ScenarioShootout(), "P1", null, null));
+        else if (Keyboard.current.iKey.wasPressedThisFrame)
+            StartCoroutine(PlayReplay(ScenarioUniform(goal: false), "P1", null, null));
+        else if (Keyboard.current.oKey.wasPressedThisFrame)
+            StartCoroutine(PlayReplay(ScenarioUniform(goal: true), "P1", null, null));
+    }
+
+    // ── Editor test scenarios ──
+    // A SAVE is keeper-guesses-right (keepDir == shootDir, ball meets the dive);
+    // a GOAL is keeper-wrong-way (keepDir != shootDir). Kept consistent so each
+    // scenario reads correctly in the 3D choreography.
+    private static RoundData TestRound(int round, string shooter, int shootDir, bool goal)
+    {
+        int keepDir = goal ? (shootDir + 1) % 3 : shootDir; // wrong way vs. right way
+        return new RoundData
         {
-            List<RoundData> testRounds = new List<RoundData> {
-                new RoundData { round = 1, shooter = "P1", shootDir = 1, keepDir = 0, result = ResultGoal }
-            };
-            StartCoroutine(PlayReplay(testRounds, "P1", null, null));
-        }
+            round = round,
+            shooter = shooter,
+            shootDir = shootDir,
+            keepDir = keepDir,
+            result = goal ? ResultGoal : ResultSave,
+        };
+    }
+
+    /// <summary>One kick to the right — goal (keeper dives wrong) or save (keeper guesses right).</summary>
+    private static List<RoundData> ScenarioSingle(bool goal) =>
+        new List<RoundData> { TestRound(1, "P1", shootDir: 2, goal: goal) };
+
+    /// <summary>Ten kicks to the same lane, all goals or all saves — isolates one outcome.</summary>
+    private static List<RoundData> ScenarioUniform(bool goal)
+    {
+        var rounds = new List<RoundData>();
+        for (int i = 0; i < 10; i++)
+            rounds.Add(TestRound(i + 1, (i % 2 == 0) ? "P1" : "P2", shootDir: i % 3, goal: goal));
+        return rounds;
+    }
+
+    /// <summary>Full 10-kick shootout: alternating P1/P2, varied lanes, a realistic mix.</summary>
+    private static List<RoundData> ScenarioShootout()
+    {
+        // (shootDir, goal?) per kick — a believable spread of lanes and outcomes.
+        var script = new (int dir, bool goal)[]
+        {
+            (0, true), (2, true), (1, false), (0, true), (2, false),
+            (1, true), (0, false), (2, true), (1, true), (0, true),
+        };
+        var rounds = new List<RoundData>();
+        for (int i = 0; i < script.Length; i++)
+            rounds.Add(TestRound(i + 1, (i % 2 == 0) ? "P1" : "P2", script[i].dir, script[i].goal));
+        return rounds;
     }
 
     private void CacheShooter()

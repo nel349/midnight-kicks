@@ -22,6 +22,9 @@ public class BallKicker : MonoBehaviour
     [SerializeField] private float netZ = 10.8f;           // inside the net, behind the line
     [SerializeField] private float goalHeight = 1.1f;      // height the ball enters the net
 
+    [Header("Save")]
+    [SerializeField] private float saveContactHeight = 1.2f; // height the ball meets the keeper's hands
+
     [Header("Flight")]
     [SerializeField] private float flightDuration = 0.55f;
     [SerializeField] private float arcHeight = 1.4f;
@@ -87,7 +90,7 @@ public class BallKicker : MonoBehaviour
     private IEnumerator FlySaved(float x, int dir)
     {
         Vector3 start = transform.position;
-        Vector3 savePoint = new Vector3(x, 1.2f, goalLineZ); // meets the keeper's hands
+        Vector3 savePoint = new Vector3(x, saveContactHeight, goalLineZ); // meets the keeper's hands
         yield return Arc(start, ControlPoint(start, savePoint, arcHeight), savePoint, flightDuration);
 
         // Hold at the keeper's hands until the dive's contact Animation Event
