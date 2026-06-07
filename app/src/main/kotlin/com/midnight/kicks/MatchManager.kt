@@ -1302,6 +1302,11 @@ open class MatchManager(
             },
         ) { prev ->
             val nonce = requireNotNull(p2SdNonce) { "No P2 SD nonce captured" }
+            // P1 already revealed this round (state is P1SdRevealed). On a P2
+            // resume that skipped waitForP1SdRevealed, p1SdShoot/p1SdKeep are
+            // stale zeros — read P1's pick from chain so the replay is correct.
+            awaitContractState(DEFAULT_OPPONENT_WAIT_MS) { it.p1Revealed && it.sdRound == prev.round }
+                .let { p1SdShoot = it.p1SdShoot; p1SdKeep = it.p1SdKeep }
             delay(INTER_TX_SETTLE_MS)
             requireSdk.wallet.refresh()
             revealSuddenDeath(p2SecretKey, prev.address, p2SdShoot, p2SdKeep, nonce)
@@ -2664,9 +2669,11 @@ open class MatchManager(
         private const val JOIN_RETRY_DELAY_MS = 2_000L
 
         /**
-         * How long to wait for an opponent's tx to surface on chain before
-         * giving up. 5 minutes matches [COMMIT_DEADLINE_DURATION_SECS] —
-         * past that, the contract's own timeout kicks in.
+         * How long a single opponent-wait polls before giving up. This is a
+         * UX bound, NOT the forfeit deadline — [COMMIT_DEADLINE_DURATION_SECS]
+         * (the on-chain claimTimeout gate) is far longer, so a wait timing out
+         * means "opponent slow, leave + resume / claim after the deadline", not
+         * "match lost". The match stays resumable in MatchStore either way.
          */
         private const val DEFAULT_OPPONENT_WAIT_MS = 5L * 60L * 1_000L
     }

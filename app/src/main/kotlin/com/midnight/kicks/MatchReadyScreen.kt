@@ -32,6 +32,10 @@ fun MatchReadyScreen(
     role: Player,
     onBack: () -> Unit,
     onContinue: () -> Unit,
+    // True once the on-chain deadline passed and the opponent owes a move →
+    // enables CLAIM POT (forfeit).
+    claimable: Boolean = false,
+    onClaimForfeit: () -> Unit = {},
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = KicksColors.Background) {
         Column(
@@ -82,14 +86,21 @@ fun MatchReadyScreen(
 
             KicksButton(label = "CONTINUE", onClick = onContinue)
 
-            Spacer(modifier = Modifier.height(20.dp))
-            Text(
-                "PvP gameplay loop = Phase 4 step 3 (next session).\nTap CONTINUE today to log the role/address.",
-                color = Color.White.copy(alpha = 0.3f),
-                fontSize = 11.sp,
-                letterSpacing = 1.sp,
-                textAlign = TextAlign.Center,
-            )
+            if (claimable) {
+                Spacer(modifier = Modifier.height(16.dp))
+                KicksButton(
+                    label = "CLAIM POT",
+                    onClick = onClaimForfeit,
+                    style = KicksButtonStyle.Danger,
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    "Opponent missed the deadline — claim the pot.",
+                    color = Color.White.copy(alpha = 0.45f),
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
     }
 }

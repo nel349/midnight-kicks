@@ -271,13 +271,15 @@ class KicksActivity : FragmentActivity() {
                         // drives the remaining steps from the
                         // rehydrated picks.
                         val managerState = matchManager?.state?.value
-                        val needsFreshPicks = when {
-                            managerState is MatchState.Joined -> true
-                            // P1Committed + P2 role → P2 still owes a
-                            // commit. P1Committed + P1 role → P1 done,
-                            // resume the rest.
-                            managerState is MatchState.P1Committed && s.role == Player.P2 -> true
-                            else -> false
+                        // Needs fresh picks iff this device hasn't committed its
+                        // regulation yet — the same threshold the resume
+                        // orchestrators enforce (P1 < P1_COMMITTED, P2 <
+                        // BOTH_COMMITTED). SD states are past both, so the SD loop
+                        // re-prompts; null state → resume path builds the manager.
+                        val rank = managerState?.protocolRank ?: Int.MAX_VALUE
+                        val needsFreshPicks = when (s.role) {
+                            Player.P1 -> rank < PhaseRank.P1_COMMITTED
+                            Player.P2 -> rank < PhaseRank.BOTH_COMMITTED
                         }
                         if (needsFreshPicks) {
                             Log.i(TAG, "CONTINUE: role=${s.role} state=$managerState → launching Unity for picks")
@@ -287,6 +289,12 @@ class KicksActivity : FragmentActivity() {
                             resumeOrchestrator(s.role)
                         }
                     },
+                    // Wall-clock hint only — the contract's claimTimeout is the real
+                    // gate (claimForfeit fails legibly if the deadline hasn't passed).
+                    claimable = store.load(s.address)?.let {
+                        System.currentTimeMillis() / 1000 >= it.deadline
+                    } ?: false,
+                    onClaimForfeit = { claimForfeit(s.address) },
                 )
                 KicksScreen.Resume -> {
                     // Load the store OFF the main thread. loadAll() decrypts each
@@ -438,6 +446,22 @@ class KicksActivity : FragmentActivity() {
         }
     }
 
+    /**
+     * Claim the pot when the opponent missed the deadline. claimForfeit() lands
+     * the match in Resolved(WON_BY_FORFEIT) on success — the state collector
+     * surfaces the "you win" label — or Failed (e.g. contract "deadline not
+     * reached") whose message the collector also shows. Either way, back to Menu.
+     */
+    private fun claimForfeit(address: String) {
+        lifecycleScope.launch {
+            val manager = matchManager ?: return@launch
+            Log.i(TAG, "Claiming forfeit for ${address.take(16)}…")
+            manager.claimForfeit()
+            hasActiveSession.value = store.loadAll().isNotEmpty()
+            screen.value = KicksScreen.Menu
+        }
+    }
+
     private fun checkCreateStatus() {
         val s = screen.value as? KicksScreen.Creating ?: return
         val address = s.address ?: return
@@ -514,6 +538,10 @@ class KicksActivity : FragmentActivity() {
      */
     private fun resumeIntoMatch(match: MatchStore.Match) {
         Log.i(TAG, "Resuming into match: address=${match.address.take(20)}… role=${match.role}")
+        // Cancel any still-running orchestrator before resumeSpecificMatch mutates
+        // shared identity (currentAddress / keys) out from under it.
+        orchestratorJob?.cancel()
+        orchestratorJob = null
         ensureSdkReady {
             lifecycleScope.launch {
                 val manager = matchManager ?: return@launch
