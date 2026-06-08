@@ -1,15 +1,9 @@
 package com.midnight.kicks
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
@@ -37,17 +31,10 @@ fun MatchReadyScreen(
     claimable: Boolean = false,
     onClaimForfeit: () -> Unit = {},
 ) {
-    Surface(modifier = Modifier.fillMaxSize(), color = KicksColors.Background) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 24.dp, vertical = 32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Top,
-        ) {
-            TopBackBar(label = "MATCH READY", onBack = onBack)
+    KicksScreenScaffold {
+        TopBackBar(label = "MATCH READY", onBack = onBack)
 
-            Spacer(modifier = Modifier.height(80.dp))
+        Spacer(modifier = Modifier.height(if (isCompactHeight()) 24.dp else 80.dp))
 
             Text(
                 "✓",
@@ -82,7 +69,7 @@ fun MatchReadyScreen(
                 textAlign = TextAlign.Center,
             )
 
-            Spacer(modifier = Modifier.height(72.dp))
+            Spacer(modifier = Modifier.height(if (isCompactHeight()) 24.dp else 72.dp))
 
             KicksButton(label = "CONTINUE", onClick = onContinue)
 
@@ -102,5 +89,4 @@ fun MatchReadyScreen(
                 )
             }
         }
-    }
 }

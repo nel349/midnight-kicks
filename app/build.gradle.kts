@@ -104,6 +104,7 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.03.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material3:material3-window-size-class") // adaptive layout (landscape)
     implementation("androidx.activity:activity-compose:1.12.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
 

@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -12,7 +13,9 @@ import android.os.Message
 import android.os.Messenger
 import android.os.Process
 import android.os.RemoteException
+import android.provider.Settings
 import android.util.Log
+import android.view.OrientationEventListener
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.foundation.layout.Box
@@ -67,6 +70,30 @@ class KicksMatchActivity : UnityPlayerGameActivity() {
 
     /** main's inbox, obtained on bind; null until [conn] connects / after disconnect. */
     private var toMain: Messenger? = null
+
+    /**
+     * Drives device rotation for the Unity session. Unity 6's GameActivity base
+     * swallows rotation here — the menu activity rotates with identical manifest
+     * flags (`fullUser` + `configChanges` handles orientation), but the Unity
+     * window stays stuck at its launch orientation because Unity's native
+     * auto-rotation doesn't take. We bypass it: read the physical device angle
+     * and set [setRequestedOrientation] explicitly, which forces a window
+     * relayout that Unity's surface follows. Mirrors the menu's `fullUser`
+     * semantics by respecting the system auto-rotate (rotation-lock) setting.
+     */
+    private var orientationListener: OrientationEventListener? = null
+
+    /**
+     * Guards [setRequestedOrientation]: only `true` for the duration of a call
+     * the [orientationListener] makes. Unity 6's native player ALSO calls
+     * setRequestedOrientation (from Player-Settings auto-rotation), and the two
+     * fight — the window rotates, then Unity re-asserts and snaps it back ("two
+     * rotations"). We make the listener the single owner: its requests pass
+     * through, Unity's are dropped. Unity still renders the correct orientation
+     * because it follows the actual [android.content.res.Configuration] via
+     * onConfigurationChanged, independent of the requested value.
+     */
+    @Volatile private var honorOrientationRequest = false
 
     /**
      * `:unity`'s own inbox. Handles messages main pushes to us. Lives on
@@ -202,6 +229,9 @@ class KicksMatchActivity : UnityPlayerGameActivity() {
             // `.clickable { }` on a full-screen Box), Unity input
             // dies silently — flag any such modifier in review.
             setContent {
+                // Adaptive size class for the in-match overlays (picker, replay,
+                // etc.) so they reflow in landscape. Provided in the :unity root.
+                ProvideWindowSizeClass(this@KicksMatchActivity) {
                 // Box stack: the full-screen replay overlay paints
                 // first (when active it dims Unity and shows the
                 // scoreboard), the HUD banner paints on top so its
@@ -223,6 +253,7 @@ class KicksMatchActivity : UnityPlayerGameActivity() {
                     // behind these and never received the tap).
                     MatchLeaveButton(onLeave = ::leaveMatch)
                 }
+                } // ProvideWindowSizeClass
             }
         }
 
@@ -237,7 +268,66 @@ class KicksMatchActivity : UnityPlayerGameActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
         )
         addContentView(composeView, params)
+
+        startAutoRotate()
     }
+
+    /**
+     * Begin following the device's physical rotation. Each distinct quadrant maps
+     * to an explicit [ActivityInfo] orientation; we only re-request when it
+     * actually changes (the listener fires on every degree). When the user has
+     * rotation-lock on we hand control back to the system (`UNSPECIFIED`) so the
+     * window stays put, matching the menu's `fullUser` behaviour.
+     */
+    private fun startAutoRotate() {
+        orientationListener = object : OrientationEventListener(this) {
+            override fun onOrientationChanged(degrees: Int) {
+                if (degrees == ORIENTATION_UNKNOWN) return
+                if (!isSystemAutoRotateOn()) {
+                    setIfChanged(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+                    return
+                }
+                // Standard quadrant mapping (degrees are clockwise from the
+                // device's natural/portrait orientation). 90°-wide buckets give
+                // an implicit dead-zone at each boundary so a phone held at an
+                // angle doesn't flip-flop.
+                val desired = when (degrees) {
+                    in 45..134 -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+                    in 135..224 -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
+                    in 225..314 -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                    else -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                }
+                setIfChanged(desired)
+            }
+        }.also { if (it.canDetectOrientation()) it.enable() }
+    }
+
+    private fun setIfChanged(orientation: Int) {
+        if (requestedOrientation != orientation) {
+            honorOrientationRequest = true
+            try {
+                requestedOrientation = orientation
+            } finally {
+                honorOrientationRequest = false
+            }
+        }
+    }
+
+    /**
+     * Drop orientation requests that don't come from our [orientationListener]
+     * (i.e. Unity's native auto-rotation), so the two don't fight. See
+     * [honorOrientationRequest].
+     */
+    override fun setRequestedOrientation(requestedOrientation: Int) {
+        if (honorOrientationRequest) {
+            super.setRequestedOrientation(requestedOrientation)
+        } else {
+            Log.d(TAG, "Ignoring external setRequestedOrientation($requestedOrientation); listener owns orientation")
+        }
+    }
+
+    private fun isSystemAutoRotateOn(): Boolean =
+        Settings.System.getInt(contentResolver, Settings.System.ACCELEROMETER_ROTATION, 0) == 1
 
     override fun onDestroy() {
         // Clear the `:unity`-side relays so a stale lambda can't fire after
@@ -248,6 +338,8 @@ class KicksMatchActivity : UnityPlayerGameActivity() {
         // handleMatchPaused → MatchBridge.onUnityGone.
         UnityBridge.onMessageFromUnity = null
         MatchHud.relayHook = null
+        orientationListener?.disable()
+        orientationListener = null
         runCatching { unbindService(conn) }
         super.onDestroy()
     }

@@ -11,6 +11,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -18,7 +19,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -35,6 +42,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
@@ -213,6 +221,9 @@ class KicksActivity : FragmentActivity() {
         handleDeepLink(intent)
 
         setContent {
+            // Adaptive WindowSizeClass for the whole UI tree; recomputes on
+            // rotation (observes Configuration) under this activity's configChanges.
+            ProvideWindowSizeClass(this@KicksActivity) {
             when (val s = screen.value) {
                 KicksScreen.Menu -> KicksApp(
                     statusMessage = statusMessage.value,
@@ -345,6 +356,7 @@ class KicksActivity : FragmentActivity() {
                     onCancel = { pendingAbandon.value = null },
                 )
             }
+            } // ProvideWindowSizeClass
         }
     }
 
@@ -1506,6 +1518,9 @@ fun KicksApp(
     onQuickPractice: () -> Unit,
     onPracticeVsAi: () -> Unit,
 ) {
+    // Landscape (short height): scroll the menu + tighten spacers so every button
+    // stays reachable; portrait keeps the centered layout.
+    val compact = isCompactHeight()
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = KicksColors.Background,
@@ -1532,110 +1547,167 @@ fun KicksApp(
                     ),
             )
 
-            PanelBar(network = network, onNetworkChange = onNetworkChange)
-
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    // Keep the menu within the status/nav/cutout safe area; the
-                    // stadium Image + scrim above stay edge-to-edge behind the bars.
-                    .systemBarsPadding()
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    "MIDNIGHT",
-                    color = Color.White.copy(alpha = 0.4f),
-                    fontSize = 14.sp,
-                    letterSpacing = 6.sp,
-                )
-                Text(
-                    "KICKS",
-                    color = Color.White,
-                    fontSize = 48.sp,
-                    fontWeight = FontWeight.W200,
-                    letterSpacing = 8.sp,
-                )
-
-                Spacer(modifier = Modifier.height(48.dp))
-
-                // Glass panel enclosing the menu actions so the buttons read
-                // cleanly over the bright stadium behind them.
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(Color.Black.copy(alpha = 0.82f))
-                        .border(
-                            width = 1.dp,
-                            color = Color.White.copy(alpha = 0.12f),
-                            shape = RoundedCornerShape(24.dp),
-                        )
-                        .padding(horizontal = 20.dp, vertical = 24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    if (hasActiveSession) {
-                        MenuButton("RESUME MATCH", onClick = onResumeMatch)
-                        Spacer(modifier = Modifier.height(16.dp))
-                    }
-                    MenuButton("CREATE MATCH", onClick = onCreateMatch)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    MenuButton("JOIN MATCH", onClick = onJoinMatch)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    // Off-chain instant practice — no contract, dust, or proving.
-                    // Same game (picker → AI → 3D replay), computed locally;
-                    // nothing is persisted, so there's nothing to resume.
-                    KicksButton(
-                        label = "QUICK PRACTICE",
-                        onClick = onQuickPractice,
-                        style = KicksButtonStyle.Secondary,
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    // On-chain match against a local AI opponent (deploy →
-                    // commit → reveal, same as PvP) — real stakes + proofs.
-                    KicksButton(
-                        label = "VS AI · ON-CHAIN",
-                        onClick = onPracticeVsAi,
-                        style = KicksButtonStyle.Secondary,
-                    )
-                }
-
-                if (statusMessage != null || lastChoices != null) {
-                    Spacer(modifier = Modifier.height(48.dp))
-                    if (lastChoices != null) {
-                        Text(
-                            lastChoices,
-                            color = KicksColors.Accent,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Medium,
-                            letterSpacing = 4.sp,
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                    }
-                    if (statusMessage != null) {
-                        Text(
-                            statusMessage,
-                            // Amber + full opacity. The old 50%-grey buried
-                            // actionable warnings ("forge your sigil first")
-                            // against the near-black background — easy to miss.
-                            color = KicksColors.Warning,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(48.dp))
-                Text(
-                    "World Cup 2026",
-                    color = Color.White.copy(alpha = 0.2f),
-                    fontSize = 12.sp,
-                    letterSpacing = 4.sp,
+            val panel = @Composable { mod: Modifier ->
+                MenuPanel(
+                    hasActiveSession = hasActiveSession,
+                    onResumeMatch = onResumeMatch,
+                    onCreateMatch = onCreateMatch,
+                    onJoinMatch = onJoinMatch,
+                    onQuickPractice = onQuickPractice,
+                    onPracticeVsAi = onPracticeVsAi,
+                    modifier = mod,
                 )
             }
+
+            // PanelBar sits ATOP the menu in a Column (its documented pattern),
+            // not overlaid in the Box — so the menu content fills only the space
+            // *below* the pills and can never rise under them (the landscape
+            // panel was colliding with the top-right wallet pill). The stadium
+            // image + scrim above remain full-bleed behind this Column.
+            // PanelBar already clears the status bar; the content below only
+            // needs the side + bottom safe insets (landscape nav bar / cutout).
+            Column(modifier = Modifier.fillMaxSize()) {
+                PanelBar(network = network, onNetworkChange = onNetworkChange)
+
+                val contentInsets = Modifier.windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(
+                        WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom,
+                    ),
+                )
+                if (compact) {
+                    // Landscape: two panes — brand + status on the left, the
+                    // action panel on the right — so every button fits the short
+                    // height without scrolling (the right pane scrolls as a
+                    // fallback).
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .then(contentInsets)
+                            .padding(horizontal = 32.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(32.dp),
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            MenuBrand()
+                            MenuStatus(statusMessage, lastChoices, topGap = 20.dp)
+                            Spacer(modifier = Modifier.height(20.dp))
+                            MenuFooter()
+                        }
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            panel(Modifier)
+                        }
+                    }
+                } else {
+                    // Portrait: the classic centered stack.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .then(contentInsets)
+                            .padding(24.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        MenuBrand()
+                        Spacer(modifier = Modifier.height(48.dp))
+                        panel(Modifier)
+                        MenuStatus(statusMessage, lastChoices, topGap = 48.dp)
+                        Spacer(modifier = Modifier.height(48.dp))
+                        MenuFooter()
+                    }
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun MenuBrand() {
+    Text("MIDNIGHT", color = Color.White.copy(alpha = 0.4f), fontSize = 14.sp, letterSpacing = 6.sp)
+    Text(
+        "KICKS",
+        color = Color.White,
+        fontSize = 48.sp,
+        fontWeight = FontWeight.W200,
+        letterSpacing = 8.sp,
+    )
+}
+
+@Composable
+private fun MenuFooter() {
+    Text("World Cup 2026", color = Color.White.copy(alpha = 0.2f), fontSize = 12.sp, letterSpacing = 4.sp)
+}
+
+/** Status / last-choices block under the menu; nothing rendered when both null. */
+@Composable
+private fun MenuStatus(statusMessage: String?, lastChoices: String?, topGap: Dp) {
+    if (statusMessage == null && lastChoices == null) return
+    Spacer(modifier = Modifier.height(topGap))
+    if (lastChoices != null) {
+        Text(
+            lastChoices,
+            color = KicksColors.Accent,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 4.sp,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+    }
+    if (statusMessage != null) {
+        Text(
+            statusMessage,
+            // Amber + full opacity so actionable warnings ("forge your sigil
+            // first") aren't buried against the near-black background.
+            color = KicksColors.Warning,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+/** The glass action panel — shared by the portrait stack and the landscape pane. */
+@Composable
+private fun MenuPanel(
+    hasActiveSession: Boolean,
+    onResumeMatch: () -> Unit,
+    onCreateMatch: () -> Unit,
+    onJoinMatch: () -> Unit,
+    onQuickPractice: () -> Unit,
+    onPracticeVsAi: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color.Black.copy(alpha = 0.82f))
+            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(24.dp))
+            .padding(horizontal = 20.dp, vertical = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (hasActiveSession) {
+            MenuButton("RESUME MATCH", onClick = onResumeMatch)
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+        MenuButton("CREATE MATCH", onClick = onCreateMatch)
+        Spacer(modifier = Modifier.height(16.dp))
+        MenuButton("JOIN MATCH", onClick = onJoinMatch)
+        Spacer(modifier = Modifier.height(16.dp))
+        // Off-chain instant practice — no contract, dust, or proving. Same game
+        // (picker → AI → 3D replay), computed locally; nothing persisted.
+        KicksButton(label = "QUICK PRACTICE", onClick = onQuickPractice, style = KicksButtonStyle.Secondary)
+        Spacer(modifier = Modifier.height(16.dp))
+        // On-chain match vs a local AI (deploy → commit → reveal) — real proofs.
+        KicksButton(label = "VS AI · ON-CHAIN", onClick = onPracticeVsAi, style = KicksButtonStyle.Secondary)
     }
 }
 

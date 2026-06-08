@@ -9,19 +9,22 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -164,8 +167,7 @@ private fun ReplayBody(
                         localRole = localRole,
                         modifier = Modifier
                             .align(Alignment.TopStart)
-                            .statusBarsPadding()
-                            .displayCutoutPadding()
+                            .windowInsetsPadding(WindowInsets.safeDrawing)
                             .padding(16.dp),
                     )
                     val lastKick = replay.rounds[revealedKicks - 1]
@@ -348,6 +350,11 @@ private fun ResultHud(
     onRematch: () -> Unit,
     onMenu: () -> Unit,
 ) {
+    // Landscape (short height) keeps a scroll as a safety net. The decisive end
+    // screen reflows to a two-pane that fits, so it stays centered; the tied
+    // "continue" beat can be taller than a landscape viewport, so it top-aligns.
+    val compact = isCompactHeight()
+    val decisive = replay.p1Score != replay.p2Score
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -358,12 +365,12 @@ private fun ResultHud(
                     1f to KicksColors.Background.copy(alpha = 0.96f),
                 ),
             )
-            .statusBarsPadding()
-            .displayCutoutPadding()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center,
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .padding(if (compact) 16.dp else 24.dp)
+            .then(if (compact) Modifier.verticalScroll(rememberScrollState()) else Modifier),
+        contentAlignment = if (compact && !decisive) Alignment.TopCenter else Alignment.Center,
     ) {
-        if (replay.p1Score != replay.p2Score) {
+        if (decisive) {
             EndScreen(replay = replay, localRole = localRole, onRematch = onRematch, onMenu = onMenu)
         } else {
             Column(
@@ -408,15 +415,41 @@ private fun EndScreen(
 
     val accent = if (won) KicksColors.Warning else KicksColors.Danger
 
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(20.dp),
-    ) {
-        Text(text = if (won) "🏆" else "💔", fontSize = 52.sp)
-        VerdictBadge(won = won, accent = accent)
-        ResultScore(playerLabel = playerLabel, mine = mine, theirs = theirs, won = won, opponentName = opponentName, accent = accent)
-        ShootoutRecap(playerLabel = playerLabel, rounds = replay.rounds, localRole = localRole, opponentName = opponentName)
-        EndActions(onRematch = onRematch, onMenu = onMenu)
+    if (isCompactHeight()) {
+        // Landscape: two panes — the emotional summary (verdict + score) on the
+        // left, the detail + exits (recap + REMATCH/MENU) on the right — so the
+        // celebration fits the short height without scrolling or clipping.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(40.dp),
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(text = if (won) "🏆" else "💔", fontSize = 36.sp)
+                VerdictBadge(won = won, accent = accent)
+                ResultScore(playerLabel = playerLabel, mine = mine, theirs = theirs, won = won, opponentName = opponentName, accent = accent)
+            }
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                ShootoutRecap(playerLabel = playerLabel, rounds = replay.rounds, localRole = localRole, opponentName = opponentName)
+                EndActions(onRematch = onRematch, onMenu = onMenu)
+            }
+        }
+    } else {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            Text(text = if (won) "🏆" else "💔", fontSize = 52.sp)
+            VerdictBadge(won = won, accent = accent)
+            ResultScore(playerLabel = playerLabel, mine = mine, theirs = theirs, won = won, opponentName = opponentName, accent = accent)
+            ShootoutRecap(playerLabel = playerLabel, rounds = replay.rounds, localRole = localRole, opponentName = opponentName)
+            EndActions(onRematch = onRematch, onMenu = onMenu)
+        }
     }
 }
 
@@ -474,7 +507,8 @@ private fun ScoreSide(label: String, score: Int, color: Color) {
 
 /**
  * Classic penalty-board recap: one row of goal/save marks per player, in kicking
- * order, with regulation and sudden-death visually split. ● = goal, ○ = saved.
+ * order, with regulation and sudden-death visually split. Reuses the live
+ * scoreboard's pips — green ✓ scored, red ✕ saved — so both reads match.
  */
 @Composable
 private fun ShootoutRecap(playerLabel: String, rounds: List<RoundResult>, localRole: Player?, opponentName: String) {
@@ -492,7 +526,7 @@ private fun ShootoutRecap(playerLabel: String, rounds: List<RoundResult>, localR
         RecapRow(label = playerLabel, marks = mineMarks)
         RecapRow(label = opponentName, marks = theirMarks)
         Text(
-            text = "● goal   ○ saved",
+            text = "✓ scored   ✕ saved",
             color = Color.White.copy(alpha = 0.45f),
             fontSize = 11.sp,
             letterSpacing = 1.sp,
@@ -522,11 +556,8 @@ private fun RecapRow(label: String, marks: List<Boolean>) {
             if (idx == REGULATION_KICKS_PER_PLAYER) {
                 Text(text = "|", color = Color.White.copy(alpha = 0.3f), fontSize = 16.sp)
             }
-            Text(
-                text = if (goal) "●" else "○",
-                color = if (goal) KicksColors.Success else Color.White.copy(alpha = 0.4f),
-                fontSize = 18.sp,
-            )
+            // Reuse the live scoreboard pip (all recap marks are final/revealed).
+            ShotPip(ShotMark(revealed = true, goal = goal))
         }
     }
 }

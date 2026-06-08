@@ -74,6 +74,18 @@ public class ShotManager : MonoBehaviour
     private Camera mainCamera;
     private bool isPlaying = false;
     private string resultMessage = "";
+
+    // ── Live re-framing on rotation ──
+    // The last aspect-aware shot framing, kept so Update() can re-fit the FOV the
+    // instant the screen aspect changes (device rotation) instead of waiting for
+    // the next kick's FrameShot(). The camera doesn't move within a round, so the
+    // stored cam pos / look-at stay valid; only the FOV needs to re-fit the new
+    // aspect. Set by ApplyFramed, replayed by ApplyStoredFraming.
+    private Vector3 frameCamPos;
+    private Vector3 frameLookAt;
+    private Vector3[] framePoints;
+    private bool hasFrame = false;
+    private float lastAspect = -1f;
     // Which side ("P1"/"P2") is the local device — set per replay so the shooter
     // wears the local vs opponent kit each round. Defaults to P1 (PvAI / editor).
     private string localSide = "P1";
@@ -86,6 +98,14 @@ public class ShotManager : MonoBehaviour
 
     void Update()
     {
+        // Re-fit the shot framing the moment the screen aspect changes (device
+        // rotation), so an in-flight kick re-frames live instead of waiting for
+        // the next kick. Runs in every state (incl. mid-replay), so it sits
+        // ahead of the editor-key guard below.
+        if (mainCamera == null) mainCamera = Camera.main;
+        if (hasFrame && mainCamera != null && !Mathf.Approximately(mainCamera.aspect, lastAspect))
+            ApplyStoredFraming();
+
         // Editor test scenarios (keyboard). No keyboard on a phone, so these are
         // inert in a device build — `Keyboard.current` is null there.
         if (isPlaying || Keyboard.current == null) return;
@@ -254,6 +274,11 @@ public class ShotManager : MonoBehaviour
     {
         float elapsed = 0f;
 
+        // The intro drives the camera itself; suspend stored-frame re-fitting so a
+        // rotation mid-pan doesn't snap the camera to last round's shot framing.
+        // FrameShot() re-arms it for each kick.
+        hasFrame = false;
+
         if (mainCamera == null) yield break;
         Transform cam = mainCamera.transform;
         mainCamera.fieldOfView = EstablishingFov;
@@ -301,15 +326,31 @@ public class ShotManager : MonoBehaviour
     /// </summary>
     private void ApplyFramed(Vector3 camPos, Vector3 lookAt, params Vector3[] points)
     {
-        if (mainCamera == null) return;
+        frameCamPos = camPos;
+        frameLookAt = lookAt;
+        framePoints = points;
+        hasFrame = true;
+        ApplyStoredFraming();
+    }
+
+    /// <summary>
+    /// Place the camera at the stored framing and widen the (vertical) FOV until
+    /// every stored point fits the CURRENT aspect (horizontal FOV = vertical FOV
+    /// scaled by width/height). Called by <see cref="ApplyFramed"/> per kick and
+    /// re-called from <see cref="Update"/> the moment the aspect changes, so a
+    /// rotation re-fits the shot live instead of at the next kick.
+    /// </summary>
+    private void ApplyStoredFraming()
+    {
+        if (mainCamera == null || !hasFrame) return;
         Transform cam = mainCamera.transform;
-        cam.position = camPos;
-        cam.LookAt(lookAt);
+        cam.position = frameCamPos;
+        cam.LookAt(frameLookAt);
 
         float aspect = mainCamera.aspect; // width / height; < 1 in portrait
         float maxTanV = 0.02f;
         float maxTanH = 0.02f;
-        foreach (var p in points)
+        foreach (var p in framePoints)
         {
             Vector3 v = cam.InverseTransformPoint(p); // camera-local, +z forward
             if (v.z <= 0.05f) continue;               // ignore points behind the camera
@@ -320,6 +361,7 @@ public class ShotManager : MonoBehaviour
         float vFovForWidth  = 2f * Mathf.Atan(maxTanH / aspect);
         float vFov = Mathf.Max(vFovForHeight, vFovForWidth) * Mathf.Rad2Deg * framingPadding;
         mainCamera.fieldOfView = Mathf.Clamp(vFov, framingMinFov, framingMaxFov);
+        lastAspect = aspect;
     }
 
     private IEnumerator PlayRound(RoundData round)

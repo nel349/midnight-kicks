@@ -273,10 +273,12 @@ private fun JerseySegmented(selected: Jersey, onSelect: (Jersey) -> Unit) {
 @Composable
 private fun CountryGrid(selectedCode: String, onSelect: (String) -> Unit) {
     LazyVerticalGrid(
-        columns = GridCells.Fixed(4),
+        // Adaptive columns: 4-ish in portrait, more when wider (landscape/tablet);
+        // shorter viewport in compact height so it doesn't dominate the scroll.
+        columns = GridCells.Adaptive(minSize = 76.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .height(220.dp),
+            .height(if (isCompactHeight()) 150.dp else 220.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {

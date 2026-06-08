@@ -24,13 +24,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -116,6 +117,9 @@ private fun PickerContent(show: MatchHud.PickerShow) {
         }
     }
 
+    // Landscape (short height): shrink the banner + buttons + spacing so all
+    // three corners stay fully visible and thumb-reachable without scrolling.
+    val compact = isCompactHeight()
     val safeStep = step.coerceIn(0, (total - 1).coerceAtLeast(0))
     val isShoot = show.roles.getOrElse(order.getOrElse(safeStep) { 0 }) { "shoot" } == "shoot"
     // Position within the current group, e.g. "3 of 5" — shoots come first.
@@ -151,13 +155,14 @@ private fun PickerContent(show: MatchHud.PickerShow) {
             )
             // Modal: swallow stray taps so they don't fall through to Unity.
             .pointerInput(Unit) { detectTapGestures { } }
-            .statusBarsPadding()
-            .displayCutoutPadding(),
+            // safeDrawing keeps the picker clear of the status bar AND the side
+            // nav bar / side cutout in landscape (status+cutout alone missed those).
+            .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 24.dp, vertical = 28.dp),
+                .padding(horizontal = 24.dp, vertical = if (compact) 12.dp else 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
@@ -185,7 +190,7 @@ private fun PickerContent(show: MatchHud.PickerShow) {
             // ── Centre: role banner, crossfading only on the shoot↔keep switch
             // (stays put within a group so the player isn't visually nagged). ──
             Crossfade(targetState = isShoot, label = "role") { shoot ->
-                RoleBanner(isShoot = shoot)
+                RoleBanner(isShoot = shoot, compact = compact)
             }
 
             // ── Bottom: the three corners ──
@@ -193,22 +198,22 @@ private fun PickerContent(show: MatchHud.PickerShow) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                DirectionButton(Modifier.weight(1f), "◀", "LEFT", accent) { onPick(0) }
-                DirectionButton(Modifier.weight(1f), "▲", "CENTRE", accent) { onPick(1) }
-                DirectionButton(Modifier.weight(1f), "▶", "RIGHT", accent) { onPick(2) }
+                DirectionButton(Modifier.weight(1f), "◀", "LEFT", accent, compact) { onPick(0) }
+                DirectionButton(Modifier.weight(1f), "▲", "CENTRE", accent, compact) { onPick(1) }
+                DirectionButton(Modifier.weight(1f), "▶", "RIGHT", accent, compact) { onPick(2) }
             }
         }
     }
 }
 
 @Composable
-private fun RoleBanner(isShoot: Boolean) {
+private fun RoleBanner(isShoot: Boolean, compact: Boolean) {
     val accent = if (isShoot) KicksColors.SuccessBright else KicksColors.Pending
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             text = if (isShoot) "YOU SHOOT" else "YOU KEEP",
             color = accent,
-            fontSize = 44.sp,
+            fontSize = if (compact) 30.sp else 44.sp,
             fontWeight = FontWeight.Black,
             letterSpacing = 1.sp,
         )
@@ -216,7 +221,7 @@ private fun RoleBanner(isShoot: Boolean) {
         Text(
             text = if (isShoot) "pick your corner" else "guess their corner",
             color = Color.White.copy(alpha = 0.78f),
-            fontSize = 16.sp,
+            fontSize = if (compact) 13.sp else 16.sp,
             textAlign = TextAlign.Center,
         )
     }
@@ -260,6 +265,7 @@ private fun DirectionButton(
     glyph: String,
     label: String,
     accent: Color,
+    compact: Boolean,
     onClick: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -274,7 +280,7 @@ private fun DirectionButton(
     Box(
         modifier = modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .height(116.dp)
+            .height(if (compact) 84.dp else 116.dp)
             .clip(RoundedCornerShape(22.dp))
             .background(accent.copy(alpha = fillAlpha))
             .border(2.dp, accent.copy(alpha = 0.85f), RoundedCornerShape(22.dp))
