@@ -687,6 +687,19 @@ class KicksActivity : FragmentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Lobby theme plays while the menu is foregrounded. Launching a match
+        // backgrounds this activity (→ onPause), so the theme ducks out for the
+        // Unity match audio and resumes here on return.
+        LobbyMusic.resume(this)
+    }
+
+    override fun onPause() {
+        LobbyMusic.pause()
+        super.onPause()
+    }
+
     override fun onDestroy() {
         UnityBridge.onMessageFromUnity = null
         MatchHud.relayHook = null
@@ -696,6 +709,7 @@ class KicksActivity : FragmentActivity() {
         // coroutines automatically, but the SDK isn't lifecycle-aware.
         matchManager?.close()
         matchManager = null
+        LobbyMusic.release()
         super.onDestroy()
     }
 

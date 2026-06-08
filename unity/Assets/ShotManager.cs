@@ -250,6 +250,12 @@ public class ShotManager : MonoBehaviour
         else if (p2Score > p1Score) resultMessage = "PLAYER 2 WINS!";
         else resultMessage = "DRAW!";
 
+        // Final eruption as the result screen appears — framed from THIS device's
+        // side so a win roars and a loss is restrained.
+        bool localWon = (this.localSide == "P1" && p1Score > p2Score)
+                     || (this.localSide == "P2" && p2Score > p1Score);
+        AudioManager.PlayMatchEnd(localWon);
+
         yield return new WaitForSeconds(FinalResultHold);
 
         isPlaying = false;
@@ -408,10 +414,14 @@ public class ShotManager : MonoBehaviour
         yield return new WaitForSeconds(KickWindupDuration);
 
         if (ballKicker != null) ballKicker.KickTo(round.shootDir, round.result == ResultGoal);
+        AudioManager.PlayKick();
         yield return new WaitForSeconds(KeeperDiveDelay);
         if (keeper != null) keeper.Dive(round.keepDir, KeeperDiveDuration);
 
         yield return new WaitForSeconds(BallFlightDuration);
+        // The reaction lands as the ball arrives: goal → net ripple + crowd roar,
+        // save → defiant drum + a lower roar. (Was save-only; goals were silent.)
+        AudioManager.PlayRoundResult(round.result);
 
         // Post-kick reactions. With only Idle / Run / Kick on the shooter and
         // Idle / Dive* / FallenIdle on the keeper, we layer procedural motion
