@@ -26,8 +26,9 @@ object IdentityConfigModule {
         rpName = RP_NAME,
     )
 
-    // Dev Digital Asset Links host (GitHub Pages). Swap to the production
-    // domain once Kicks's own DAL is hosted there.
-    private const val RP_ID = "nel349.github.io"
+    // Canonical Kuira sigil relying-party host (GitHub Pages, org-owned).
+    // Shared across the Kuira example apps so one sigil restores across all of
+    // them; the matching assetlinks.json lists every app's package + cert.
+    private const val RP_ID = "kuiralabs.github.io"
     private const val RP_NAME = "Midnight Kicks"
 }
